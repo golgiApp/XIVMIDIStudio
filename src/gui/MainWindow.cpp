@@ -980,10 +980,22 @@ MainWindow::MainWindow(QString initFile)
         }
         _matrixWidgetContainer->update();
     };
-    _arrangementWidget->seekTimeRequested = [this, seekArrangementTick](int ms) {
-        if (file) seekArrangementTick(_arrangementWidget->snapTutorialTick(
-            file->tick(std::max(0, ms))));
+    const auto seekFromRuler = [this, seekArrangementTick](int ms) {
+        if (!file || MidiInput::recording()) return;
+        int tick = file->tick(std::max(0, ms));
+        const int tutorialTick = _arrangementWidget->snapTutorialTick(tick);
+        if (tutorialTick != tick) {
+            tick = tutorialTick;
+        } else if (EventTool::magnetEnabled() && (EventTool::magnetMode() & EventTool::SNAP_GRID)) {
+            int start = 0, end = 0;
+            file->measure(tick, &start, &end);
+            if (start <= tick && tick <= end)
+                tick = tick - start <= end - tick ? start : end;
+        }
+        if (tick != file->cursorTick() || MidiPlayer::isPlaying()) seekArrangementTick(tick);
     };
+    _arrangementWidget->seekTimeRequested = seekFromRuler;
+    mw_matrixWidget->seekTimeRequested = seekFromRuler;
     mw_matrixWidget->commitRegionNotes = [this](int id, std::vector<xiv::OwnedRegionNote> notes,
                                                 const QString &description) {
         _arrangementWidget->replaceRegionNotes(id, std::move(notes), description);
@@ -4971,7 +4983,7 @@ void MainWindow::copy() {
 
 void MainWindow::paste() {
     if (mw_matrixWidget->allTracksEditing()) {
-        mw_matrixWidget->allTracksPaste();
+        mw_matrixWidget->pasteNotesAtPlayhead();
         return;
     }
     EventTool::pasteAction();

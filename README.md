@@ -15,6 +15,13 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 - Use the Piano Roll and **GM Drum Map** to select notes by pitch, remove the open hi-hat hits, and transpose the Bass Drum notes.
 - Try Global Tracks, the Piano Roll views and grid options, and playback controls.
 
+## What's new in v0.3.6.4
+
+- **Delete or Backspace.** Either key deletes the selection in the focused Arrangement or Piano Roll editor.
+- **Shared playhead controls.** Click or drag either ruler to move the playhead. Snap places it at the nearest measure start.
+- **Persistent note selection.** Notes stay selected after quantizing or adjusting their lengths. Voice filters retain the selection on surviving notes.
+- **Paste notes at the playhead.** Select a destination region, place the playhead inside it, and paste from the Piano Roll. The copied phrase keeps its internal spacing.
+
 ## What's new in v0.3.6.3
 
 - **Fix XIV Channels.** Channel rebuilds keep edited melodic regions on their tracks' assigned channels so their instruments play correctly.

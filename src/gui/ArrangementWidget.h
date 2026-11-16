@@ -603,6 +603,12 @@ public:
     }
 
 protected:
+    bool isDeleteShortcut(const QKeyEvent *event) const {
+        return (event->modifiers() == Qt::NoModifier &&
+                (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) ||
+               matchesCommand(event, QStringLiteral("xiv_arrangement_delete"));
+    }
+
     bool event(QEvent *e) override {
         // Hover events also repaint on entry and exit, independently of drag
         // handlers that consume mouse moves. Use the current layout on paint.
@@ -620,7 +626,7 @@ protected:
             if ((_selectedRegionId && isSplitShortcut(key)) || isJoinShortcut(key) ||
                 regionClipboardShortcut(key) ||
                 (_selectedRegionId && regionOctaveShift(key) != 0) ||
-                (matchesCommand(key, QStringLiteral("xiv_arrangement_delete")) &&
+                (isDeleteShortcut(key) &&
                  (_tempoSelected >= 0 || _selectedRegionId || (_trackHeaderSelected && _selected)))) {
                 e->accept();
                 return true;
@@ -630,7 +636,7 @@ protected:
     }
 
     void keyPressEvent(QKeyEvent *e) override {
-        if (matchesCommand(e, QStringLiteral("xiv_arrangement_delete")) &&
+        if (isDeleteShortcut(e) &&
             _tempoSelected >= 0 && _showGlobalTracks && canEditQuantize()) {
             if (!e->isAutoRepeat()) deleteSelectedTempoPoint();
             e->accept();
@@ -660,7 +666,7 @@ protected:
             e->accept();
             return;
         }
-        if (matchesCommand(e, QStringLiteral("xiv_arrangement_delete")) &&
+        if (isDeleteShortcut(e) &&
             (_selectedRegionId || (_trackHeaderSelected && _selected)) && canEditQuantize()) {
             if (!e->isAutoRepeat()) {
                 if (_selectedRegionId) deleteSelectedRegion();
@@ -2447,6 +2453,12 @@ private:
         QStringList display;
         for (const auto &binding : bindings)
             if (!binding.isEmpty()) display.append(binding.toString(QKeySequence::NativeText));
+        if (id == QStringLiteral("xiv_arrangement_delete")) {
+            for (const auto key : {Qt::Key_Backspace, Qt::Key_Delete}) {
+                const auto text = QKeySequence(key).toString(QKeySequence::NativeText);
+                if (!display.contains(text)) display.append(text);
+            }
+        }
         return display.isEmpty() ? label : label + QLatin1Char('\t') + display.join(QStringLiteral(" / "));
     }
 

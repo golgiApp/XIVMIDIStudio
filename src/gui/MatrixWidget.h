@@ -139,7 +139,8 @@ public:
     void selectAllTracksVelocityNote(int id);
     bool setAllTracksVelocities(const std::map<int, int> &velocities);
     bool copyProjectedNotes();
-    bool allTracksPaste();
+    bool pasteNotesAtPlayhead();
+    std::function<void(int)> seekTimeRequested;
     bool forceLegatoRegionSelection();
 
     void setGMDrumLabelsVisible(bool show);
@@ -761,6 +762,7 @@ private:
     bool _regionEditingSafe = false;
     enum class RegionGesture { None, Select, Move, ResizeLeft, ResizeRight, Add, NoteMenu };
     RegionGesture _regionGesture = RegionGesture::None;
+    bool _rulerDragging = false;
     QPoint _regionPressPoint;
     std::set<int> _regionSelection;
     std::set<int> _regionBoxBase;

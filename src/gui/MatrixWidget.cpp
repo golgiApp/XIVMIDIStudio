@@ -1423,6 +1423,7 @@ void MatrixWidget::setFile(MidiFile *f) {
     _regionEditingSafe = false;
     _selectedViewRegionId = 0;
     _selectedViewRegionIds.clear();
+    _rulerDragging = false;
 
     scaleX = 1;
     scaleY = 1;
@@ -2003,7 +2004,9 @@ bool MatrixWidget::adjustAllTracksEnds(bool overlapsOnly) {
         }
     }
     if (!changed) return false;
+    const auto selection = projectedEditSelection();
     commitProjectedRegions(std::move(updated), overlapsOnly ? tr("Remove Note Overlaps") : tr("Force Legato"));
+    restoreEditedNoteSelection(selection);
     return true;
 }
 
@@ -2062,26 +2065,34 @@ bool MatrixWidget::copyProjectedNotes() {
     return copied;
 }
 
-bool MatrixWidget::allTracksPaste() {
-    if (!canEditAllTracks()) return false;
+bool MatrixWidget::pasteNotesAtPlayhead() {
+    if (!file || !enabled || !commitProjectedRegions ||
+        MidiPlayer::isPlaying() || MidiInput::recording()) return false;
     std::vector<xiv::OwnedRegionNote> notes;
     if (!SharedClipboard::instance()->readNotes(file->ticksPerQuarter(), notes)) return false;
-    const int trackIndex = NewNoteTool::editTrack();
-    if (trackIndex < 0 || trackIndex >= file->numTracks()) return false;
-    const int channel = file->track(trackIndex)->assignedChannel();
-    if (channel < 0 || channel > 15 || file->track(trackIndex)->hidden()) return false;
-    int first = std::numeric_limits<int>::max(), last = 0;
-    for (const auto &note : notes) {
-        first = std::min(first, note.startTick);
-        last = std::max(last, note.endTick);
+
+    const auto *region = _regionViewModel.find(_selectedViewRegionId);
+    const int tick = file->cursorTick();
+    if (!region || region->trackIndex != NewNoteTool::editTrack() ||
+        !region->contains(tick)) {
+        QToolTip::showText(QCursor::pos(), tr("Select a destination region under the playhead."), this);
+        return false;
     }
-    for (auto &note : notes) {
-        note.startTick -= first;
-        note.endTick -= first;
+    if (region->loopLengthTicks) {
+        QToolTip::showText(QCursor::pos(), tr("Remove the loop extension before pasting notes into this region."), this);
+        return false;
     }
+    const int channel = file->track(region->trackIndex)->assignedChannel();
+    if (channel < 0 || channel > 15) return false;
+
+    auto combined = regionNotesForEdit(*region);
+    if (!xiv::appendRegionNotesAtPlayhead(*region, tick, channel, notes, combined)) {
+        QToolTip::showText(QCursor::pos(), tr("The copied notes do not fit. Extend the destination region before pasting."), this);
+        return false;
+    }
+
     auto updated = _regionViewModel;
-    if (!xiv::insertOwnedRegion(updated, trackIndex, file->cursorTick(), file->numTracks(),
-                                 {last - first, std::move(notes)}, channel)) return false;
+    if (!updated.replaceOwnedNotes(region->id, std::move(combined))) return false;
     commitProjectedRegions(std::move(updated), tr("Paste Notes"));
     return true;
 }
@@ -2115,12 +2126,12 @@ QString MatrixWidget::noteShortcut(const QKeyEvent *event) const {
         return {};
     const auto &selection = allTracksEditing() ? _allSelection : _regionSelection;
     const QKeySequence key(event->keyCombination());
-    if (allTracksEditing()) {
-        for (const auto *id : {"select_all", "paste"})
-            if (noteBindings(QString::fromLatin1(id)).contains(key)) return QString::fromLatin1(id);
-    }
+    if (noteBindings(QStringLiteral("paste")).contains(key)) return QStringLiteral("paste");
+    if (allTracksEditing() && noteBindings(QStringLiteral("select_all")).contains(key))
+        return QStringLiteral("select_all");
     if (selection.empty()) return {};
-    if (event->key() == Qt::Key_Backspace && event->modifiers() == Qt::NoModifier)
+    if ((event->key() == Qt::Key_Backspace || event->key() == Qt::Key_Delete) &&
+        event->modifiers() == Qt::NoModifier)
         return QStringLiteral("delete");
     for (const auto *id : {"xiv_note_cut", "copy", "delete", "quantize", "transpose",
                           "transpose_up", "transpose_down", "xiv_note_legato", "xiv_note_overlaps",
@@ -2165,8 +2176,12 @@ void MatrixWidget::showNoteMenu(const QPoint &position) {
         QStringList display;
         for (const auto &binding : noteBindings(id))
             if (!binding.isEmpty()) display.append(binding.toString(QKeySequence::NativeText));
-        if (id == QStringLiteral("delete") && !display.contains(QKeySequence(Qt::Key_Backspace).toString()))
-            display.append(QKeySequence(Qt::Key_Backspace).toString(QKeySequence::NativeText));
+        if (id == QStringLiteral("delete")) {
+            for (const auto key : {Qt::Key_Backspace, Qt::Key_Delete}) {
+                const auto text = QKeySequence(key).toString(QKeySequence::NativeText);
+                if (!display.contains(text)) display.append(text);
+            }
+        }
         auto *action = parent.addAction(display.isEmpty() ? label :
             label + QLatin1Char('\t') + display.join(QStringLiteral(" / ")));
         connect(action, &QAction::triggered, this, [this, id] { runNoteCommand(id); });
@@ -2191,7 +2206,7 @@ void MatrixWidget::showNoteMenu(const QPoint &position) {
 
 void MatrixWidget::runNoteCommand(const QString &command) {
     if (command == QStringLiteral("select_all")) { allTracksSelectAll(); return; }
-    if (command == QStringLiteral("paste")) { allTracksPaste(); return; }
+    if (command == QStringLiteral("paste")) { pasteNotesAtPlayhead(); return; }
     if (command == QStringLiteral("copy")) { copyProjectedNotes(); return; }
     if (command == QStringLiteral("xiv_note_cut") && !copyProjectedNotes()) return;
     if (command == QStringLiteral("delete") || command == QStringLiteral("xiv_note_cut")) {
@@ -2241,7 +2256,7 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
     const auto targets = allTracksEditing() ? allTouchedRegions() : std::set<int>{focused->id};
     if (allTracksEditing() && !xiv::materializeProjectedRegions(updated, _regionFullNotes, selection, file->numTracks()))
         return false;
-    std::set<std::pair<int, int>> transposedNotes;
+    std::set<std::pair<int, int>> survivingSelection;
     bool changed = false;
     for (int regionId : targets) {
         const auto *region = updated.find(regionId);
@@ -2257,7 +2272,6 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
                     return false;
                 }
                 note.pitch = pitch;
-                transposedNotes.emplace(regionId, note.id);
                 changed = true;
             } else if (quantize && note.startTick >= region->sourceStartTick && note.startTick < region->sourceEndTick) {
                 const int tick = note.startTick + offset;
@@ -2277,6 +2291,8 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
             std::erase_if(notes, [&](const auto &note) { return remove.count(note.id) != 0; });
             changed |= notes.size() != before;
         }
+        for (const auto &note : notes)
+            if (selection.count(note.id)) survivingSelection.emplace(regionId, note.id);
         if (!updated.replaceOwnedNotes(regionId, std::move(notes))) return false;
     }
     if (!changed) return false;
@@ -2286,7 +2302,7 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
     else commitRegionNotes(focused->id, *updated.find(focused->id)->ownedNotes, label);
     // The commit refreshes the rendered notes and clears the selection.
     // Match their owned IDs because pitch changes can reorder rendered notes.
-    if (!transposedNotes.empty()) restoreEditedNoteSelection(transposedNotes);
+    restoreEditedNoteSelection(survivingSelection);
     return true;
 }
 
@@ -2516,8 +2532,11 @@ bool MatrixWidget::adjustSelectedRegionNoteEnds(bool overlapsOnly) {
                                    : xiv::RegionNoteEndMode::Legato;
     if (!xiv::adjustRegionNoteEnds(notes, _regionViewNotes, _regionSelection,
                                    region->sourceEndTick, mode)) return false;
+    std::set<std::pair<int, int>> selection;
+    for (int id : _regionSelection) selection.emplace(region->id, id);
     commitRegionNotes(region->id, std::move(notes),
                       overlapsOnly ? tr("Remove Note Overlaps") : tr("Force Legato"));
+    restoreEditedNoteSelection(selection);
     return true;
 }
 
@@ -2585,6 +2604,12 @@ void MatrixWidget::selectPitchRange(int low, int high) {
 }
 
 void MatrixWidget::mouseMoveEvent(QMouseEvent *event) {
+    if (_rulerDragging && (event->buttons() & Qt::LeftButton)) {
+        seekTimeRequested(msOfXPos(std::clamp(qRound(event->position().x()),
+                                             lineNameWidth, std::max(lineNameWidth, width() - 1))));
+        event->accept();
+        return;
+    }
     if (_allGesture != RegionGesture::None) {
         updateAllTracksGesture(event->position().toPoint());
         refreshNotePreview(event->position().toPoint());
@@ -2845,6 +2870,13 @@ void MatrixWidget::leaveEvent(QEvent *event) {
 }
 
 void MatrixWidget::mousePressEvent(QMouseEvent *event) {
+    if (file && seekTimeRequested && event->button() == Qt::LeftButton &&
+        event->modifiers() == Qt::NoModifier && TimeLineArea.contains(event->position())) {
+        _rulerDragging = true;
+        seekTimeRequested(msOfXPos(qRound(event->position().x())));
+        event->accept();
+        return;
+    }
     if (beginAllTracksGesture(event)) {
         refreshNotePreview(event->position().toPoint());
         QWidget *focusTarget = isVisible() ? this : parentWidget();
@@ -3067,6 +3099,13 @@ void MatrixWidget::mousePressEvent(QMouseEvent *event) {
 }
 
 void MatrixWidget::mouseReleaseEvent(QMouseEvent *event) {
+    if (_rulerDragging && event->button() == Qt::LeftButton) {
+        _rulerDragging = false;
+        seekTimeRequested(msOfXPos(std::clamp(qRound(event->position().x()),
+                                             lineNameWidth, std::max(lineNameWidth, width() - 1))));
+        event->accept();
+        return;
+    }
     _notePreview.clear();
     if (_allGesture != RegionGesture::None && event->button() == _allButton) {
         endAllTracksGesture(event);
@@ -3672,11 +3711,7 @@ void MatrixWidget::zoomVerOut() {
 }
 
 void MatrixWidget::mouseDoubleClickEvent(QMouseEvent *event) {
-    if (mouseInRect(TimeLineArea)) {
-        int tick = file->tick(msOfXPos(mouseX));
-        file->setCursorTick(tick);
-        update();
-    }
+    if (TimeLineArea.contains(event->position())) mousePressEvent(event);
 }
 
 void MatrixWidget::registerRelayout() {

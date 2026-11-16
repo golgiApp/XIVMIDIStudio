@@ -45,6 +45,38 @@ inline int insertOwnedRegion(MidiRegionModel &model, int track, int start, int t
     return id;
 }
 
+// Append clipboard notes without shifting any existing material.
+inline bool appendRegionNotesAtPlayhead(const MidiRegion &region, int playhead, int channel,
+                                       const std::vector<OwnedRegionNote> &clipboard,
+                                       std::vector<OwnedRegionNote> &destination) {
+    if (clipboard.empty() || !region.contains(playhead) || channel < 0 || channel > 15)
+        return false;
+    int first = std::numeric_limits<int>::max();
+    for (const auto &note : clipboard) first = std::min(first, note.startTick);
+    const auto offset = static_cast<int64_t>(region.sourceStartTick) +
+                        playhead - region.startTick - first;
+    int64_t nextId = 1;
+    for (const auto &note : destination)
+        nextId = std::max(nextId, static_cast<int64_t>(note.id) + 1);
+    std::vector<OwnedRegionNote> pasted;
+    pasted.reserve(clipboard.size());
+    for (auto note : clipboard) {
+        const auto start = note.startTick + offset;
+        const auto end = note.endTick + offset;
+        if (start < region.sourceStartTick || end <= start ||
+            end > region.sourceEndTick || nextId > std::numeric_limits<int>::max())
+            return false;
+        note.id = static_cast<int>(nextId++);
+        note.startTick = static_cast<int>(start);
+        note.endTick = static_cast<int>(end);
+        note.channel = channel;
+        pasted.push_back(note);
+    }
+    if (!validOwnedNotes(pasted)) return false;
+    destination.insert(destination.end(), pasted.begin(), pasted.end());
+    return true;
+}
+
 // Capture the audible note positions before removing anything. The resulting
 // region owns its notes independently of the original tracks and transforms.
 inline bool consolidateRegions(MidiRegionModel &model, const std::set<int> &ids,

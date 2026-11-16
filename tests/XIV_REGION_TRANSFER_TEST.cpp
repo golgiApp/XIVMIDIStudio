@@ -88,5 +88,24 @@ int main() {
     assert(notes[4].startTick == 210 && notes[4].endTick == 225);
     assert(notes[5].startTick == 225 && notes[5].endTick == 235);
     assert(notes[6].startTick == 230 && notes[6].endTick == 240);
+    xiv::MidiRegionModel pasteModel;
+    const int destination = pasteModel.addInitial(0, 100, 200);
+    assert(pasteModel.move(destination, 300));
+    const auto &destinationRegion = *pasteModel.find(destination);
+    const std::vector<xiv::OwnedRegionNote> clipboard{
+        {1, 20, 30, 60, 90, 0}, {2, 40, 50, 64, 90, 1}
+    };
+    std::vector<xiv::OwnedRegionNote> combined{{3, 105, 110, 55, 80, 7}};
+    assert(!xiv::appendRegionNotesAtPlayhead(destinationRegion, 390, 7, clipboard, combined));
+    assert(!xiv::appendRegionNotesAtPlayhead(destinationRegion, 299, 7, clipboard, combined));
+    assert(combined.size() == 1);
+    assert(xiv::appendRegionNotesAtPlayhead(destinationRegion, 320, 7, clipboard, combined));
+    assert(combined.size() == 3 && combined[1].id == 4 && combined[2].id == 5);
+    assert(pasteModel.replaceOwnedNotes(destination, combined));
+    notes = xiv::renderRegionNotes({}, pasteModel);
+    assert(notes.size() == 3 && notes[0].startTick == 305);
+    assert(notes[1].startTick == 320 && notes[1].endTick == 330 && notes[1].channel == 7);
+    assert(notes[2].startTick == 340 && notes[2].endTick == 350 && notes[2].channel == 7);
+
     std::cout << "Horizontal and vertical joins, routing, overlays, and loop transfer passed\n";
 }

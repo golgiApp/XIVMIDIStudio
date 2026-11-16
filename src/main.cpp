@@ -203,7 +203,7 @@ int main(int argc, char *argv[]) {
         qDebug() << "Skipping OpenGL initialization - using software rendering";
     }
 
-    a.setApplicationVersion("0.3.6.3");
+    a.setApplicationVersion("0.3.6.4");
     a.setApplicationName("XIV MIDI Studio");
     a.setQuitOnLastWindowClosed(true);
 
