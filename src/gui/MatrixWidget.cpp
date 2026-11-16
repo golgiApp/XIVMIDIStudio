@@ -925,7 +925,7 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
             painter->drawText(QRect(lineNameWidth + 12, timeHeight + 15,
                                     std::max(0, width() - lineNameWidth - 24), 40),
                               Qt::AlignLeft | Qt::AlignVCenter,
-                              tr("Select a MIDI region above to display its notes"));
+                              tr("Select a region, or Shift+click empty Arrangement space to create one."));
         }
         painter->restore();
     }
@@ -1603,7 +1603,7 @@ void MatrixWidget::refreshRegionViewNotes() {
 
 const xiv::MidiRegion *MatrixWidget::editableRegion() const {
     if (!file || !enabled || !_regionViewEnabled || allTracksEditing() ||
-        !commitRegionNotes || MidiPlayer::isPlaying() || MidiInput::recording()) return nullptr;
+        !commitRegionNotes || MidiInput::recording()) return nullptr;
     const auto *region = _regionViewModel.find(_selectedViewRegionId);
     return region && !region->loopLengthTicks ? region : nullptr;
 }
@@ -1671,7 +1671,7 @@ std::vector<xiv::OwnedRegionNote> MatrixWidget::regionNotesForEdit(const xiv::Mi
 
 bool MatrixWidget::canEditAllTracks() const {
     return file && enabled && allTracksEditing() && commitProjectedRegions &&
-           !MidiPlayer::isPlaying() && !MidiInput::recording();
+           !MidiInput::recording();
 }
 
 void MatrixWidget::updateAllTracksView() {
@@ -1743,7 +1743,7 @@ bool MatrixWidget::beginAllTracksGesture(QMouseEvent *event) {
         _allGesture = RegionGesture::Add;
     } else if (hit && dynamic_cast<const StandardTool *>(tool)) {
         const int id = allNoteId(*hit);
-        const bool additive = event->modifiers().testFlag(Qt::ControlModifier);
+        const bool additive = bool(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier));
         if (additive && _allSelection.erase(id)) {
             updateAllTracksView();
             return true;
@@ -1758,7 +1758,7 @@ bool MatrixWidget::beginAllTracksGesture(QMouseEvent *event) {
             else if (rect.right() - point.x() <= 2) _allGesture = RegionGesture::ResizeRight;
         }
     } else if (dynamic_cast<const StandardTool *>(tool) || dynamic_cast<const SelectTool *>(tool)) {
-        if (!event->modifiers().testFlag(Qt::ControlModifier)) _allSelection.clear();
+        if (!(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) _allSelection.clear();
         _allBoxBase = _allSelection;
         _allGesture = RegionGesture::Select;
         _allSelectionBox = {};
@@ -2337,7 +2337,7 @@ bool MatrixWidget::beginRegionGesture(QMouseEvent *event) {
     _regionPressPoint = point;
     _regionGestureButton = event->button();
     _regionGestureModifiers = event->modifiers();
-    const bool additive = event->modifiers().testFlag(Qt::ControlModifier);
+    const bool additive = bool(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier));
     if (event->button() == Qt::RightButton || dynamic_cast<const NewNoteTool *>(tool)) {
         _regionGesture = RegionGesture::Add;
         return true;
@@ -2905,7 +2905,7 @@ void MatrixWidget::mousePressEvent(QMouseEvent *event) {
         const int pitch = std::clamp(127 - lineAtY(qRound(event->position().y())), 0, 127);
         _pitchRangeDragging = true;
         _pitchRangeAnchor = pitch;
-        _pitchRangeAdditive = bool(event->modifiers() & Qt::ControlModifier);
+        _pitchRangeAdditive = bool(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier));
         _pitchRangeExisting = Selection::instance()->selectedEvents();
         _regionBoxBase = _pitchRangeAdditive ? _regionSelection : std::set<int>{};
         _allBoxBase = _pitchRangeAdditive ? _allSelection : std::set<int>{};
@@ -3678,6 +3678,14 @@ void MatrixWidget::resetView() {
     update();
 }
 
+void MatrixWidget::setHorizontalZoom(int value) {
+    scaleX = minimumHorizontalZoom * std::pow(maximumHorizontalZoom / minimumHorizontalZoom, value / 100.0);
+    calcSizes();
+}
+void MatrixWidget::setVerticalZoom(int value) {
+    scaleY = value / 100.0;
+    calcSizes();
+}
 void MatrixWidget::zoomHorIn() {
     if (scaleX < maximumHorizontalZoom) {
         scaleX = std::min(maximumHorizontalZoom, scaleX * horizontalZoomStep);

@@ -1,3 +1,4 @@
+#include <cmath>
 /*
  * MidiEditor
  * Copyright (C) 2010  Markus Schwenk
@@ -394,6 +395,8 @@ public slots:
     /**
      * \brief Zooms in horizontally (time axis).
      */
+    void setHorizontalZoom(int value);
+    void setVerticalZoom(int value);
     void zoomHorIn();
 
     /**

@@ -79,10 +79,13 @@ void PlayerThread::run() {
         time = 0;
     }
 
-    events = file->playerData();
-
+    {
+        std::lock_guard<std::recursive_mutex> lock(scheduleMutex);
+        events = file->playerData();
+        restorePlaybackState(position.load(), false);
+        scheduleChanged = false;
+    }
     emit playerStarted();
-    restorePlaybackState(position.load(), false);
 
     setInterval(INTERVAL_TIME);
 
@@ -214,7 +217,19 @@ void PlayerThread::sendTrackEvent(MidiEvent *event) {
     if (audible || !track) MidiOutput::sendCommand(event);
 }
 
+void PlayerThread::editPlayback(const std::function<void()> &edit) {
+    std::lock_guard<std::recursive_mutex> lock(scheduleMutex);
+    edit();
+    file->preparePlayerData(0);
+    scheduleChanged = true;
+}
 void PlayerThread::timeout() {
+    std::lock_guard<std::recursive_mutex> lock(scheduleMutex);
+    if (scheduleChanged) {
+        events = file->playerData();
+        restorePlaybackState(position.load(), true);
+        scheduleChanged = false;
+    }
     if (!time) {
         time = new QElapsedTimer();
         time->start();

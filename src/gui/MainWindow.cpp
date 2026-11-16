@@ -1,3 +1,5 @@
+#include "../support/XivInstrumentGroups.h"
+#include <QSlider>
 /*
  * MidiEditor
  * Copyright (C) 2010  Markus Schwenk
@@ -409,6 +411,16 @@ MainWindow::MainWindow(QString initFile)
     gridLayout->setContentsMargins(0, 0, 0, 0);
     gridLayout->setSpacing(6);
     pianoHeaderRows->addWidget(gridControls, 0, Qt::AlignLeft);
+    for (bool vertical : {true, false}) {
+        auto *slider = new QSlider(Qt::Horizontal, pianoHeader);
+        slider->setRange(vertical ? 20 : 0, vertical ? 300 : 100);
+        slider->setValue(vertical ? 100 : 50);
+        slider->setMaximumWidth(100);
+        slider->setToolTip(vertical ? tr("Piano Roll vertical zoom") : tr("Piano Roll horizontal zoom"));
+        gridLayout->addWidget(slider);
+        connect(slider, &QSlider::valueChanged, mw_matrixWidget,
+                vertical ? &MatrixWidget::setVerticalZoom : &MatrixWidget::setHorizontalZoom);
+    }
     gridLayout->addWidget(new QLabel(tr("Grid"), pianoHeader));
     auto *gridButtons = new QButtonGroup(pianoHeader);
     using GridMode = xiv::PianoRollGridMode;
@@ -832,9 +844,18 @@ MainWindow::MainWindow(QString initFile)
         for (const QString &path : paths) {
             const auto presets = xivReadSoundFontPresets(path);
             if (presets.isEmpty()) continue;
-            QMenu *fontMenu = menu.addMenu(QFileInfo(path).completeBaseName());
+            QMenu *fontMenu = paths.size() == 1 ? &menu : menu.addMenu(QFileInfo(path).completeBaseName());
+            if (QFileInfo(path).completeBaseName().compare(QStringLiteral("FFXIV Standard"), Qt::CaseInsensitive) == 0) {
+                const auto groups = xivInstrumentGroups();
+                for (const auto &group : groups) {
+                    QMenu *family = fontMenu->addMenu(group.first);
+                    for (int program : group.second)
+                        for (const auto &preset : presets)
+                            if (preset.bank == 0 && preset.program == program)
+                                addPreset(family, preset.name, program);
+                }
+            }
             for (const auto &preset : presets) {
-                // Bank 0 is preserved by a regular program-change MIDI event.
                 if (preset.bank == 0) addPreset(fontMenu, preset.name, preset.program);
             }
             if (fontMenu->isEmpty()) fontMenu->menuAction()->setVisible(false);
@@ -998,11 +1019,15 @@ MainWindow::MainWindow(QString initFile)
     mw_matrixWidget->seekTimeRequested = seekFromRuler;
     mw_matrixWidget->commitRegionNotes = [this](int id, std::vector<xiv::OwnedRegionNote> notes,
                                                 const QString &description) {
-        _arrangementWidget->replaceRegionNotes(id, std::move(notes), description);
+        const auto edit = [&]() { _arrangementWidget->replaceRegionNotes(id, std::move(notes), description); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(edit);
+        else edit();
     };
     mw_matrixWidget->commitProjectedRegions = [this](xiv::MidiRegionModel model,
                                                        const QString &description) {
-        _arrangementWidget->replaceProjectedRegions(std::move(model), description);
+        const auto edit = [&]() { _arrangementWidget->replaceProjectedRegions(std::move(model), description); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(edit);
+        else edit();
     };
     if (_matrixWidgetContainer != mw_matrixWidget)
         _matrixWidgetContainer->installEventFilter(mw_matrixWidget);
@@ -1455,6 +1480,36 @@ MainWindow::MainWindow(QString initFile)
     auto *fixChannelsButton = addControl(_fixXIVChannelsTracksAction);
     fixChannelsButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     bar->addStretch(1);
+    auto *autoZoom = new QToolButton(controlBar);
+    autoZoom->setText(tr("Fit Tracks"));
+    autoZoom->setToolTip(tr("Vertical Auto Zoom"));
+    autoZoom->setCheckable(true);
+    bar->addWidget(autoZoom);
+    auto *verticalZoom = new QSlider(Qt::Horizontal, controlBar);
+    verticalZoom->setRange(84, 180);
+    verticalZoom->setValue(84);
+    verticalZoom->setMaximumWidth(80);
+    verticalZoom->setToolTip(tr("Arrangement vertical zoom"));
+    bar->addWidget(verticalZoom);
+    connect(verticalZoom, &QSlider::valueChanged, this, [this, autoZoom](int value) {
+        autoZoom->setChecked(false);
+        _arrangementWidget->setLaneHeight(value);
+    });
+    auto *fitTimer = new QTimer(autoZoom);
+    fitTimer->setInterval(150);
+    connect(fitTimer, &QTimer::timeout, this, [this, autoZoom]() {
+        if (!autoZoom->isChecked() || !file || !file->numTracks()) return;
+        const int available = _arrangementWidget->parentWidget()->height() - _arrangementWidget->rulerHeight();
+        _arrangementWidget->setLaneHeight(available / file->numTracks());
+    });
+    fitTimer->start();
+    auto *horizontalZoom = new QSlider(Qt::Horizontal, controlBar);
+    horizontalZoom->setRange(0, 100);
+    horizontalZoom->setValue(50);
+    horizontalZoom->setMaximumWidth(80);
+    horizontalZoom->setToolTip(tr("Arrangement horizontal zoom"));
+    bar->addWidget(horizontalZoom);
+    connect(horizontalZoom, &QSlider::valueChanged, _arrangementWidget, &ArrangementWidget::setTimelineZoom);
     for (bool zoomIn : {false, true}) {
         auto *button = new QToolButton(controlBar);
         button->setIcon(Appearance::adjustIconForDarkMode(zoomIn
@@ -1830,6 +1885,10 @@ void MainWindow::loadInitFile() {
         return;
     }
 
+    if (!_settings->value("startup/show_chooser", true).toBool()) {
+        newFile();
+        return;
+    }
     const auto recent = std::find_if(_recentFilePaths.cbegin(), _recentFilePaths.cend(),
         [](const QString &path) { return QFileInfo(path).isFile(); });
     const QString recentPath = recent == _recentFilePaths.cend() ? QString() : *recent;
@@ -1867,8 +1926,20 @@ void MainWindow::loadInitFile() {
     buttons->button(QDialogButtonBox::Ok)->setDefault(true);
     layout->addWidget(buttons);
 
+    auto *disableStartup = new QPushButton(tr("Don't Show Again"), &startup);
+    layout->addWidget(disableStartup);
+    auto *startupHint = new QLabel(tr("To bring this menu back, choose View → Show Startup Menu on Launch."), &startup);
+    startupHint->setWordWrap(true);
+    layout->addWidget(startupHint);
+    connect(disableStartup, &QPushButton::clicked, &startup, [this, &startup]() {
+        _settings->setValue("startup/show_chooser", false);
+        newFile();
+        startup.accept();
+    });
+
     // A canceled file picker or a failed open returns to the same choices.
     while (!file && startup.exec() == QDialog::Accepted) {
+        if (file) break;
         if (openRecent->isChecked())
             openFile(recentPath);
         else if (openExisting->isChecked())
@@ -5340,6 +5411,15 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     QMenu *playbackMB = menuBar()->addMenu(tr("Playback"));
     QMenu *midiMB = menuBar()->addMenu(tr("MIDI"));
     QMenu *helpMB = menuBar()->addMenu(tr("Help"));
+    auto *startupAction = viewMB->addAction(tr("Show Startup Menu on Launch"));
+    startupAction->setCheckable(true);
+    startupAction->setChecked(_settings->value("startup/show_chooser", true).toBool());
+    connect(viewMB, &QMenu::aboutToShow, this, [this, startupAction]() {
+        startupAction->setChecked(_settings->value("startup/show_chooser", true).toBool());
+    });
+    connect(startupAction, &QAction::toggled, this, [this](bool show) {
+        _settings->setValue("startup/show_chooser", show);
+    });
 
     // File
     QAction *newAction = new QAction(tr("New"), this);
@@ -5599,7 +5679,7 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     QAction *configAction = new QAction(tr("Settings"), this);
     Appearance::setActionIcon(configAction, ":/run_environment/graphics/tool/config.png");
     connect(configAction, SIGNAL(triggered()), this, SLOT(openConfig()));
-    editMB->addAction(configAction);
+    fileMB->addAction(configAction);
 
     // Tools
     QMenu *toolsToolsMenu = new QMenu(tr("Current Tool..."), toolsMB);
@@ -6793,11 +6873,6 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     playbackMB->addAction(pianoEmulationAction);
 
     // Midi
-    QAction *configAction2 = new QAction(tr("Settings"), this);
-    Appearance::setActionIcon(configAction2, ":/run_environment/graphics/tool/config.png");
-    connect(configAction2, SIGNAL(triggered()), this, SLOT(openConfig()));
-    midiMB->addAction(configAction2);
-
     QAction *thruAction = new QAction(tr("Connect MIDI In/Out"), this);
     Appearance::setActionIcon(thruAction, ":/run_environment/graphics/tool/connection.png");
     thruAction->setCheckable(true);

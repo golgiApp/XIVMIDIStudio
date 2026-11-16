@@ -99,6 +99,8 @@ public:
     std::function<void(MidiTrack *, const QPoint &)> instrumentMenuRequested;
     std::function<void(MidiTrack *, const QPoint &)> trackMenuRequested;
     std::function<void(MidiTrack *)> renameTrackRequested;
+    int _headerDragRow = -1;
+    QPoint _headerDragStart;
     std::function<void(int)> scrollTimeRequested;
     // Range and page step (in milliseconds) for the arrangement-only scrollbar.
     std::function<void(int, int)> scrollRangeChanged;
@@ -277,7 +279,7 @@ public:
     void replaceRegionNotes(int id, std::vector<xiv::OwnedRegionNote> notes,
                             const QString &description) {
         const auto *region = _regions.find(id);
-        if (!_file || MidiPlayer::isPlaying() || MidiInput::recording() ||
+        if (!_file || MidiInput::recording() ||
             id != _selectedRegionId || !region || region->loopLengthTicks) return;
         ProtocolEntry *before = _regionHistory.copy();
         if (!_regions.replaceOwnedNotes(id, std::move(notes))) {
@@ -288,7 +290,7 @@ public:
     }
 
     void replaceProjectedRegions(xiv::MidiRegionModel updated, const QString &description) {
-        if (!canEditQuantize()) return;
+        if (!_file || !_regionsReady || MidiInput::recording()) return;
         if (!updated.replaceValidated(updated.regions(), _file->numTracks())) return;
         auto *before = _regionHistory.copy();
         _regions = std::move(updated);
@@ -306,7 +308,20 @@ public:
         update();
     }
 
-    static constexpr int laneHeight = 84;
+    int laneHeight = 84;
+    void setLaneHeight(int height) {
+        const int nextHeight = std::clamp(height, 84, 1000);
+        if (laneHeight == nextHeight) return;
+        laneHeight = nextHeight;
+        setMinimumHeight(std::max(130, rulerHeight() + (_file ? _file->numTracks() : 0) * laneHeight));
+        updateGeometry();
+        update();
+    }
+    void setTimelineZoom(int value) {
+        _scale = 0.004 * std::pow(175.0, value / 100.0);
+        refreshHorizontalRange();
+        update();
+    }
 
     void setFile(MidiFile *file) {
         if (_file != file) {
@@ -1037,6 +1052,19 @@ protected:
     }
 
     void contextMenuEvent(QContextMenuEvent *e) override {
+        if (inCycleStrip(e->pos())) {
+            QMenu menu(this);
+            auto *clear = menu.addAction(tr("Clear Cycle Range"));
+            clear->setEnabled(_cycle.active());
+            if (menu.exec(e->globalPos()) == clear) {
+                _cycle = {};
+                _cycleEnabled = false;
+                publishCycle();
+                update();
+            }
+            e->accept();
+            return;
+        }
         if (inTempoLane(e->pos()) && e->pos().x() >= headerWidth && canEditQuantize()) {
             auto points = xiv::readTempoMap(_file);
             const auto [kind, tick] = tempoHit(points, e->pos());
@@ -1294,6 +1322,8 @@ protected:
                 } else {
                     setSelectedTrack(track);
                     if (selectTrackRequested) selectTrackRequested(track);
+                    _headerDragRow = row;
+                    _headerDragStart = pos;
                     _trackHeaderSelected = true;
                     _selectedRegionIds.clear();
                     for (const auto &region : _regions.regions())
@@ -1388,6 +1418,11 @@ protected:
     }
 
     void mouseMoveEvent(QMouseEvent *e) override {
+        if (_headerDragRow >= 0 && (e->buttons() & Qt::LeftButton)) {
+            setCursor(Qt::ClosedHandCursor);
+            e->accept();
+            return;
+        }
         const QPoint pos = e->position().toPoint();
         if (_playheadDragging) {
             updatePlayheadDrag(pos.x());
@@ -1536,6 +1571,29 @@ protected:
     }
 
     void mouseReleaseEvent(QMouseEvent *e) override {
+        if (_headerDragRow >= 0) {
+            const int from = _headerDragRow;
+            _headerDragRow = -1;
+            const int to = (int(e->position().y()) - rulerHeight()) / laneHeight;
+            if (_file && canEditQuantize() && to >= 0 && to < _file->numTracks() && from != to &&
+                (e->position().toPoint() - _headerDragStart).manhattanLength() >= 8) {
+                const auto oldTracks = *_file->tracks();
+                _trackLayoutEditing = true;
+                _file->protocol()->startNewAction(tr("Reorder Tracks"));
+                auto *before = _file->copy();
+                _file->tracks()->move(from, to);
+                _file->protocol()->enterUndoStep(new ProtocolItem(before, _file));
+                recordTrackLayoutChange(oldTracks);
+                for (int i = 0; i < _file->numTracks(); ++i)
+                    _file->track(i)->setNumber(i);
+                _file->protocol()->endAction();
+                _trackLayoutEditing = false;
+                rebuildPreview();
+                if (regionViewChanged) regionViewChanged();
+                e->accept();
+                return;
+            }
+        }
         update();
         if (e->button() == Qt::LeftButton && _playheadDragging) {
             updatePlayheadDrag(e->position().toPoint().x());
@@ -2350,7 +2408,7 @@ private:
         p.fillRect(0, 0, width(), rulerHeight(), QColor("#292D34"));
         p.setFont(QFont(QStringLiteral("Segoe UI"), 9, QFont::DemiBold));
         p.setPen(QColor("#E8EFF8"));
-        p.drawText(QRect(14, 0, 125, measureRulerHeight), Qt::AlignVCenter,
+        p.drawText(QRect(8, 0, headerWidth - 16, measureRulerHeight), Qt::AlignVCenter,
                    _showGlobalTracks ? tr("▾ Global Tracks") : tr("▸ Global Tracks"));
         if (_showGlobalTracks) {
             drawGlobalHeader(p, measureRulerHeight, sectionLaneHeight, tr("Arrangement"));

@@ -186,7 +186,7 @@ void MainWindow::startTutorial() {
          tr("The GM pitches were too low for the XIV part. Transposing the remaining notes puts them in range.")},
         {tr("Arrangement and Tempo"), tr("Global Tracks above the track headers opens the Tempo lane, where you can see changes in speed."), {}},
         {tr("Piano Roll views"), tr("All Tracks shows notes from every track together, like most versions of MidiEditor. Selected Region shows only the region you clicked, so you can focus on one instrument."), {}},
-        {tr("Try the Piano Roll grid"), tr("Click 1/4, 1/8, and 1/16 to see quarter-note, eighth-note, and sixteenth-note spacing. Then switch back to Auto. Hold Ctrl and scroll the mouse wheel over the Piano Roll to zoom horizontally. In Auto, zooming in shows smaller subdivisions of the beat, and zooming out shows larger ones."), {}},
+        {tr("Try the Piano Roll grid"), tr("Click 1/4, 1/8, and 1/16 to see quarter-note, eighth-note, and sixteenth-note spacing. Then switch back to Auto. Hold Ctrl and scroll the mouse wheel over the Piano Roll to zoom horizontally. Hold Shift and scroll to zoom vertically. In Auto, zooming in shows smaller subdivisions of the beat, and zooming out shows larger ones."), {}},
         {tr("Undo and Redo"), tr("Use these two buttons in the top bar to reverse or reapply an edit."), {}},
         {tr("Arrangement zoom"), tr("Use the zoom buttons on the right of the top bar to see more detail or more of the song."), {}},
         {tr("Mute and Solo"), tr("In the buttons at the lower right of each track header, click the speaker to mute or unmute the track. Click the headphones to solo it."), {}},
@@ -334,14 +334,14 @@ void MainWindow::startTutorial() {
 
         const auto showTrack = [arrangement, area](int track) {
             if (!area || track < 0) return;
-            const int bottom = arrangement->rulerHeight() + (track + 1) * ArrangementWidget::laneHeight;
+            const int bottom = arrangement->rulerHeight() + (track + 1) * arrangement->laneHeight;
             auto *scroll = area->verticalScrollBar();
             const int minimum = std::max(0, bottom - area->viewport()->height());
             if (scroll->value() < minimum)
                 scroll->setValue(minimum);
-            else if (arrangement->rulerHeight() + track * ArrangementWidget::laneHeight <
+            else if (arrangement->rulerHeight() + track * arrangement->laneHeight <
                      scroll->value() + arrangement->rulerHeight())
-                scroll->setValue(track * ArrangementWidget::laneHeight);
+                scroll->setValue(track * arrangement->laneHeight);
         };
         const auto showPitches = [this](int low, int high) {
             const int lines = high - low + 4;
@@ -449,9 +449,9 @@ void MainWindow::startTutorial() {
             target = arrangeRect(arrangement->measureMarkerRect(pasteTick)); break;
         case Step::Paste:
             if (tubaIndex >= 0) {
-                const int top = arrangement->rulerHeight() + tubaIndex * ArrangementWidget::laneHeight;
+                const int top = arrangement->rulerHeight() + tubaIndex * arrangement->laneHeight;
                 const int x = arrangement->measureMarkerRect(pasteTick).center().x();
-                target = arrangeRect(QRect(x - 8, top + 6, 24, ArrangementWidget::laneHeight - 12));
+                target = arrangeRect(QRect(x - 8, top + 6, 24, arrangement->laneHeight - 12));
             }
             break;
         case Step::Trim:
@@ -511,7 +511,7 @@ void MainWindow::startTutorial() {
         QRect editingArea = target;
         if (step == Step::Move && tubaIndex >= 0 && opening) {
             QRect destination = arrangeRect(arrangement->tutorialRegionRect(*opening).translated(
-                0, (tubaIndex - fluteIndex) * ArrangementWidget::laneHeight));
+                0, (tubaIndex - fluteIndex) * arrangement->laneHeight));
             if (!destination.isEmpty()) {
                 destination.moveTopLeft(central->mapFromGlobal(destination.topLeft()));
                 editingArea = editingArea.united(destination.intersected(central->rect()));

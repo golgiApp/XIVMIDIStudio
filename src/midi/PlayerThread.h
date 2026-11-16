@@ -1,3 +1,5 @@
+#include <mutex>
+#include <functional>
 /*
  * MidiEditor
  * Copyright (C) 2010  Markus Schwenk
@@ -97,6 +99,11 @@ public:
      */
     int timeMs();
 
+public:
+    void editPlayback(const std::function<void()> &edit);
+private:
+    std::recursive_mutex scheduleMutex;
+    bool scheduleChanged = false;
 public slots:
     /**
      * \brief Handles timer timeout events for playback processing.

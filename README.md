@@ -15,18 +15,35 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 - Use the Piano Roll and **GM Drum Map** to select notes by pitch, remove the open hi-hat hits, and transpose the Bass Drum notes.
 - Try Global Tracks, the Piano Roll views and grid options, and playback controls.
 
-## What's new in v0.3.6.4
+## What's new in v0.4.0
 
-- **Delete or Backspace.** Either key deletes the selection in the focused Arrangement or Piano Roll editor.
-- **Shared playhead controls.** Click or drag either ruler to move the playhead. Snap places it at the nearest measure start.
-- **Persistent note selection.** Notes stay selected after quantizing or adjusting their lengths. Voice filters retain the selection on surviving notes.
-- **Paste notes at the playhead.** Select a destination region, place the playhead inside it, and paste from the Piano Roll. The copied phrase keeps its internal spacing.
+This release brings together the tester-feedback improvements, including fixes first shipped in v0.3.6.3 and v0.3.6.4.
 
-## What's new in v0.3.6.3
+### Tracks and instruments
 
-- **Fix XIV Channels.** Channel rebuilds keep edited melodic regions on their tracks' assigned channels so their instruments play correctly.
-- **Persistent settings.** Appearance and Customize Toolbar preferences are loaded before startup applies the dark theme.
-- **Piano Roll editing.** Moved, resized, and transposed notes stay selected. Click a note with the standard tool to hear a short preview through its own track's instrument.
+- **Instrument families.** FFXIV Standard presets are grouped into Woodwinds, Brass, Percussion, Orchestral Strings, Piano & Plucked Strings, and Electric Guitars.
+- **Revised instrument icons.** Updated instrument silhouettes include alto saxophone, French horn, trombone, harp, cymbal, oboe, clarinet, and electric guitars. Guitar badges and menu order follow I Overdriven, II Clean, III Muted, IV Power Chords, and V Special.
+- **Track reordering.** Drag the track-header name area to move a track and its regions. Reordering supports Undo and preserves the track order used by MIDI saving and export.
+- **Fix XIV Channels.** Edited melodic regions keep their tracks' assigned channels after a rebuild. First shipped in v0.3.6.3.
+
+### Editing and playback
+
+- **Shift+click selection.** Add or remove Piano Roll notes using Shift+click. Ctrl+click is also supported.
+- **Live note editing.** Select notes and use the right-click transpose commands during playback. The playback schedule refreshes at the current position and releases sounding notes to prevent stuck pitches.
+- **Persistent selection and note audition.** Moving, resizing, transposing, quantizing, and length adjustments retain note selection. Voice filters retain surviving selected notes. Clicking a note auditions its track instrument while stopped. These fixes first shipped across v0.3.6.3 and v0.3.6.4.
+- **Delete and Backspace.** Both delete the focused editor's selection. First shipped in v0.3.6.4.
+- **Shared playhead controls.** Click or drag either ruler. Snap places the playhead at the nearest measure start. First shipped in v0.3.6.4.
+- **Paste at the playhead.** Paste into the active, unlooped destination region, preserving the phrase's internal spacing. The phrase must fit inside that region. First shipped in v0.3.6.4.
+- **Clear Cycle Range.** Right-click the cycle strip to clear its range and turn Cycle off.
+
+### Interface and preferences
+
+- **Optional startup chooser.** Choose Don't Show Again to start a new project now and on subsequent direct launches. Restore the chooser using View → Show Startup Menu on Launch. Opening a MIDI file directly opens that file.
+- **Settings under File.** Settings has one menu entry.
+- **Persistent preferences.** Appearance and Customize Toolbar preferences survive restarting. First shipped in v0.3.6.3.
+- **Zoom sliders.** Arrangement and Piano Roll have independent horizontal and vertical controls. Fit Tracks automatically adjusts Arrangement row height to the available space, subject to readable track-control sizes.
+- **Global Tracks label.** The header reserves its available width for the label.
+- **Tutorial guidance.** The grid lesson explains Shift+scroll vertical zoom. The empty Piano Roll explains selecting a region or creating one with Shift+click.
 
 ## What's new in v0.3.6.2
 

@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <QMap>
+#include "../support/XivInstrumentGroups.h"
 /*
  * MidiEditor
  * Copyright (C) 2010  Markus Schwenk
@@ -66,11 +69,27 @@ TrackRenameDialog::TrackRenameDialog(const QString &currentName, int trackNumber
         if (!soundFonts.isEmpty()) {
             QSet<int> seen;
             for (const auto &path : soundFonts) {
-                auto *font = menu->addMenu(QFileInfo(path).completeBaseName());
-                for (const auto &preset : xivReadSoundFontPresets(path)) {
+                auto *font = soundFonts.size() == 1 ? menu : menu->addMenu(QFileInfo(path).completeBaseName());
+                QMap<int, QMenu *> families;
+                if (QFileInfo(path).completeBaseName().compare(QStringLiteral("FFXIV Standard"), Qt::CaseInsensitive) == 0) {
+                    for (const auto &group : xivInstrumentGroups()) {
+                        auto *family = font->addMenu(group.first);
+                        for (int program : group.second) families.insert(program, family);
+                    }
+                }
+                auto presets = xivReadSoundFontPresets(path);
+                QList<int> order;
+                for (const auto &group : xivInstrumentGroups())
+                    for (int program : group.second) order.append(program);
+                if (!families.isEmpty())
+                    std::stable_sort(presets.begin(), presets.end(), [&order](const auto &a, const auto &b) {
+                        const int ai = order.indexOf(a.program), bi = order.indexOf(b.program);
+                        return (ai < 0 ? 999 : ai) < (bi < 0 ? 999 : bi);
+                    });
+                for (const auto &preset : presets) {
                     if (preset.bank != 0 || seen.contains(preset.program)) continue;
                     seen.insert(preset.program);
-                    auto *action = font->addAction(preset.name);
+                    auto *action = families.value(preset.program, font)->addAction(preset.name);
                     connect(action, &QAction::triggered, this, [this, preset] {
                         _program = preset.program;
                         _nameEdit->setText(preset.name);
