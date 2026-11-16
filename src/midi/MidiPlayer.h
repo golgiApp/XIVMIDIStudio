@@ -70,7 +70,7 @@ public:
      * \brief Plays a single note event for preview.
      * \param event The NoteOnEvent to play
      */
-    static void play(NoteOnEvent *event);
+    static void play(NoteOnEvent *event, int durationMs = 2000);
 
     /**
      * \brief Stops all MIDI playback.

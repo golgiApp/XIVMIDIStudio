@@ -1689,6 +1689,35 @@ const xiv::RenderedRegionNote *MatrixWidget::allNoteAt(const QPoint &point) {
     return nullptr;
 }
 
+void MatrixWidget::auditionRegionNote(const QPoint &point) {
+    if (MidiPlayer::isPlaying() || MidiInput::recording()) return;
+    const auto *note = allNoteAt(point);
+    if (!note || note->trackIndex < 0 || note->trackIndex >= file->numTracks()) return;
+    NoteOnEvent preview(note->pitch, note->velocity, note->channel,
+                        file->track(note->trackIndex), false);
+    preview.setFile(file);
+    preview.setDetachedMidiTime(note->startTick);
+    MidiPlayer::play(&preview, 250);
+}
+
+std::set<std::pair<int, int>> MatrixWidget::projectedEditSelection() const {
+    std::set<std::pair<int, int>> ids;
+    for (int id : _allSelection) {
+        if (id > 0 && id <= static_cast<int>(_regionFullNotes.size()))
+            ids.emplace(_regionFullNotes[id - 1].regionId, id);
+    }
+    return ids;
+}
+
+void MatrixWidget::restoreEditedNoteSelection(const std::set<std::pair<int, int>> &ownedIds) {
+    for (const auto &note : _regionViewNotes) {
+        if (!ownedIds.count({note.regionId, note.ownedNoteId})) continue;
+        if (allTracksEditing()) _allSelection.insert(allNoteId(note));
+        else _regionSelection.insert(note.ownedNoteId);
+    }
+    updateAllTracksView();
+}
+
 bool MatrixWidget::beginAllTracksGesture(QMouseEvent *event) {
     const QPoint point = event->position().toPoint();
     if (!allTracksEditing() || point.x() < lineNameWidth || point.y() < timeHeight ||
@@ -1762,9 +1791,19 @@ void MatrixWidget::endAllTracksGesture(QMouseEvent *event) {
     std::set<int> ids;
     int addedRegion = 0;
     auto draft = allTracksGestureDraft(gesture, event->position().toPoint(), ids, addedRegion);
-    if (draft) commitProjectedRegions(std::move(*draft),
-        gesture == RegionGesture::Add ? tr("Add Note") :
-        gesture == RegionGesture::Move ? tr("Move Notes") : tr("Resize Notes"));
+    if (draft) {
+        const auto selection = gesture == RegionGesture::Add
+            ? std::set<std::pair<int, int>>{} : projectedEditSelection();
+        commitProjectedRegions(std::move(*draft),
+            gesture == RegionGesture::Add ? tr("Add Note") :
+            gesture == RegionGesture::Move ? tr("Move Notes") : tr("Resize Notes"));
+        if (!selection.empty()) restoreEditedNoteSelection(selection);
+    } else if (event->button() == Qt::LeftButton && _allModifiers == Qt::NoModifier &&
+               (gesture == RegionGesture::Move || gesture == RegionGesture::ResizeLeft ||
+                gesture == RegionGesture::ResizeRight) &&
+               (event->position().toPoint() - _allPressPoint).manhattanLength() < QApplication::startDragDistance()) {
+        auditionRegionNote(_allPressPoint);
+    }
 }
 
 std::optional<xiv::MidiRegionModel> MatrixWidget::allTracksGestureDraft(
@@ -1888,8 +1927,10 @@ std::optional<xiv::MidiRegionModel> MatrixWidget::allTracksEditDraft(RegionGestu
 bool MatrixWidget::applyAllTracksEdit(RegionGesture gesture, int delta, int pitch) {
     auto draft = allTracksEditDraft(gesture, delta, pitch);
     if (!draft) return false;
+    const auto selection = projectedEditSelection();
     commitProjectedRegions(std::move(*draft), gesture == RegionGesture::Move
         ? tr("Move Notes") : tr("Resize Notes"));
+    restoreEditedNoteSelection(selection);
     return true;
 }
 
@@ -2245,15 +2286,7 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
     else commitRegionNotes(focused->id, *updated.find(focused->id)->ownedNotes, label);
     // The commit refreshes the rendered notes and clears the selection.
     // Match their owned IDs because pitch changes can reorder rendered notes.
-    if (!transposedNotes.empty()) {
-        for (const auto &note : _regionViewNotes) {
-            if (!transposedNotes.count({note.regionId, note.ownedNoteId})) continue;
-            if (allTracksEditing()) _allSelection.insert(allNoteId(note));
-            else _regionSelection.insert(note.ownedNoteId);
-        }
-        if (allTracksEditing()) updateAllTracksView();
-        else update();
-    }
+    if (!transposedNotes.empty()) restoreEditedNoteSelection(transposedNotes);
     return true;
 }
 
@@ -2343,9 +2376,16 @@ void MatrixWidget::endRegionGesture(QMouseEvent *event) {
     const auto *region = editableRegion();
     if (!region || gesture == RegionGesture::None || gesture == RegionGesture::Select) return;
     if (auto draft = regionGestureDraft(*region, gesture, point)) {
+        std::set<std::pair<int, int>> selection;
+        if (gesture != RegionGesture::Add)
+            for (int id : _regionSelection) selection.emplace(region->id, id);
         commitRegionNotes(region->id, std::move(*draft),
             gesture == RegionGesture::Add ? tr("Add Region Note") :
             gesture == RegionGesture::Move ? tr("Move Region Notes") : tr("Resize Region Notes"));
+        if (!selection.empty()) restoreEditedNoteSelection(selection);
+    } else if (event->button() == Qt::LeftButton && _regionGestureModifiers == Qt::NoModifier &&
+               (point - _regionPressPoint).manhattanLength() < QApplication::startDragDistance()) {
+        auditionRegionNote(_regionPressPoint);
     }
 }
 

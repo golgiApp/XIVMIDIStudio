@@ -204,7 +204,6 @@ MainWindow::MainWindow(QString initFile)
     // light-mode override from an earlier MidiEditor installation.
     _settings->setValue("ffxiv/modern_dark_workspace", true);
     _settings->setValue("application_theme", int(Appearance::ThemeMaterialDark));
-    Appearance::setApplicationTheme(Appearance::ThemeMaterialDark);
 
     _moveSelectedEventsToChannelMenu = 0;
     _moveSelectedEventsToTrackMenu = 0;
@@ -8681,9 +8680,24 @@ void MainWindow::fixXIVChannels() {
 
     file->protocol()->startNewAction(tr("Fix XIV Channels (%1)").arg(selectedTier == 3 ? tr("Preserve") : tr("Rebuild")));
     QJsonObject result = FFXIVChannelFixer::fixChannels(file, selectedTier, options);
+    const bool success = result["success"].toBool();
+    if (success && _arrangementWidget) {
+        std::map<int, int> channelsByTrack;
+        for (const auto &value : result["channelMap"].toArray()) {
+            const auto entry = value.toObject();
+            if (entry["remapRegionNotes"].toBool())
+                channelsByTrack.emplace(entry["track"].toInt(-1), entry["channel"].toInt(-1));
+        }
+        _arrangementWidget->reassignRegionChannels(channelsByTrack);
+    }
     file->protocol()->endAction();
 
-    if (result["success"].toBool()) {
+    if (success) {
+        if (_arrangementWidget) {
+            _arrangementWidget->rebuildPreview();
+            if (_arrangementWidget->regionViewChanged)
+                _arrangementWidget->regionViewChanged();
+        }
         updateAll();
         
         QString mode = result["mode"].toString();

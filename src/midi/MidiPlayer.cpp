@@ -69,8 +69,8 @@ void MidiPlayer::play(MidiFile *file, bool recording) {
     playing = true;
 }
 
-void MidiPlayer::play(NoteOnEvent *event) {
-    singleNotePlayer->play(event);
+void MidiPlayer::play(NoteOnEvent *event, int durationMs) {
+    singleNotePlayer->play(event, durationMs);
 }
 
 void MidiPlayer::stop() {

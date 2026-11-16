@@ -15,6 +15,12 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 - Use the Piano Roll and **GM Drum Map** to select notes by pitch, remove the open hi-hat hits, and transpose the Bass Drum notes.
 - Try Global Tracks, the Piano Roll views and grid options, and playback controls.
 
+## What's new in v0.3.6.3
+
+- **Fix XIV Channels.** Channel rebuilds keep edited melodic regions on their tracks' assigned channels so their instruments play correctly.
+- **Persistent settings.** Appearance and Customize Toolbar preferences are loaded before startup applies the dark theme.
+- **Piano Roll editing.** Moved, resized, and transposed notes stay selected. Click a note with the standard tool to hear a short preview through its own track's instrument.
+
 ## What's new in v0.3.6.2
 
 - **View multiple regions in the Piano Roll.** Select regions in the Arrangement, including across tracks, to see their notes together at their song positions and in their track colors. The Piano Roll button reads **Selected Region** for one region and **Selected Regions** for multiple.

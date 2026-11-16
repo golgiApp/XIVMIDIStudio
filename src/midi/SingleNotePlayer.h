@@ -61,7 +61,7 @@ public:
      * \brief Plays a single note event for preview.
      * \param event The NoteOnEvent to play
      */
-    void play(NoteOnEvent *event);
+    void play(NoteOnEvent *event, int durationMs = 2000);
 
 public slots:
     /**

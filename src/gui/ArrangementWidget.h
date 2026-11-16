@@ -201,12 +201,14 @@ public:
     }
     // Called inside the track channel protocol action.
     void reassignRegionChannels(int trackIndex, int channel) {
+        _regionTrackEditPendingSave = true;
+        reassignRegionChannels({{trackIndex, channel}});
+    }
+    void reassignRegionChannels(const std::map<int, int> &channelsByTrack) {
         auto *before = _regionHistory.copy();
-        for (const auto &region : _regions.regions()) {
-            if (region.trackIndex != trackIndex || !region.ownedNotes) continue;
-            auto notes = *region.ownedNotes;
-            for (auto &note : notes) note.channel = channel;
-            _regions.replaceOwnedNotes(region.id, std::move(notes));
+        if (!_regions.reassignOwnedNoteChannels(channelsByTrack)) {
+            delete before;
+            return;
         }
         _regionTrackEditPendingSave = true;
         _file->protocol()->enterUndoStep(new ProtocolItem(before, &_regionHistory));

@@ -784,6 +784,9 @@ private:
     std::set<int> allTouchedRegions() const;
     int allNoteId(const xiv::RenderedRegionNote &note) const;
     const xiv::RenderedRegionNote *allNoteAt(const QPoint &point);
+    void auditionRegionNote(const QPoint &point);
+    void restoreEditedNoteSelection(const std::set<std::pair<int, int>> &ownedIds);
+    std::set<std::pair<int, int>> projectedEditSelection() const;
     bool beginAllTracksGesture(QMouseEvent *event);
     void updateAllTracksGesture(const QPoint &point);
     void endAllTracksGesture(QMouseEvent *event);

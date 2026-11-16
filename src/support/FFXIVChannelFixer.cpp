@@ -396,7 +396,9 @@ QJsonObject FFXIVChannelFixer::fixChannels(MidiFile *file, int forcedTier, FixOp
                             chCount[ch]++;
                     }
                 }
-                int bestCh = t, bestCount = 0;
+                const int assigned = track->assignedChannel();
+                int bestCh = assigned >= 0 && assigned < 16 ? assigned : std::min(t, 15);
+                int bestCount = 0;
                 for (auto it = chCount.begin(); it != chCount.end(); ++it) {
                     if (it.value() > bestCount) { bestCount = it.value(); bestCh = it.key(); }
                 }
@@ -438,7 +440,9 @@ QJsonObject FFXIVChannelFixer::fixChannels(MidiFile *file, int forcedTier, FixOp
                         chCount[ch]++;
                 }
             }
-            int bestCh = t, bestCount = 0;
+            const int assigned = track->assignedChannel();
+            int bestCh = assigned >= 0 && assigned < 16 ? assigned : std::min(t, 15);
+            int bestCount = 0;
             for (auto it = chCount.begin(); it != chCount.end(); ++it) {
                 if (it.value() > bestCount) { bestCount = it.value(); bestCh = it.key(); }
             }
@@ -765,7 +769,7 @@ QJsonObject FFXIVChannelFixer::fixChannels(MidiFile *file, int forcedTier, FixOp
         int ch = channelFor[t];
         if (prog >= 0 && !channelsDone.contains(ch)) {
             MidiChannel *channel = file->channel(ch);
-            if (channel && !channel->eventMap()->isEmpty()) {
+            if (channel) {
                 MidiTrack *owner = channelToOwnerTrack.value(ch, file->track(0));
                 auto *pc = new ProgChangeEvent(ch, prog, owner);
                 channel->insertEvent(pc, 0, false);
@@ -978,6 +982,9 @@ QJsonObject FFXIVChannelFixer::fixChannels(MidiFile *file, int forcedTier, FixOp
         entry["track"]   = t;
         entry["name"]    = file->track(t)->name();
         entry["channel"] = channelFor[t];
+        // Guitar rebuild can route different notes to different variant channels.
+        entry["remapRegionNotes"] = (!isPreserveMode && !isGuitar(canonicalNames[t])) ||
+                                    dupGuitarTracks.contains(t);
         if (!canonicalNames[t].isEmpty()) {
             entry["instrument"] = canonicalNames[t];
             entry["program"]    = programForInstrument(canonicalNames[t]);

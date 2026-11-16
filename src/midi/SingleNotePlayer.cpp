@@ -18,8 +18,6 @@
 
 #include "SingleNotePlayer.h"
 
-#define SINGLE_NOTE_LENGTH_MS 2000
-
 #include "../MidiEvent/NoteOnEvent.h"
 #include "MidiOutput.h"
 #include "MidiFile.h"
@@ -32,12 +30,11 @@ SingleNotePlayer::SingleNotePlayer() {
     playing = false;
     offMessage.clear();
     timer = new QTimer();
-    timer->setInterval(SINGLE_NOTE_LENGTH_MS);
     timer->setSingleShot(true);
     connect(timer, &QTimer::timeout, this, &SingleNotePlayer::timeout);
 }
 
-void SingleNotePlayer::play(NoteOnEvent *event) {
+void SingleNotePlayer::play(NoteOnEvent *event, int durationMs) {
     if (playing) {
         MidiOutput::sendCommand(offMessage);
         timer->stop();
@@ -57,7 +54,7 @@ void SingleNotePlayer::play(NoteOnEvent *event) {
     offMessage = event->saveOffEvent();
     MidiOutput::sendCommand(event);
     playing = true;
-    timer->start();
+    timer->start(durationMs);
 }
 
 void SingleNotePlayer::timeout() {

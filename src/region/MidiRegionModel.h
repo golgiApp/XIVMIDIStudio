@@ -11,6 +11,7 @@
 #define XIV_MIDI_REGION_MODEL_H
 
 #include <algorithm>
+#include <map>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -151,6 +152,24 @@ public:
             return true;
         }
         return false;
+    }
+    bool reassignOwnedNoteChannels(const std::map<int, int> &channelsByTrack) {
+        bool changed = false;
+        for (auto &region : _regions) {
+            const auto target = channelsByTrack.find(region.trackIndex);
+            if (!region.ownedNotes || target == channelsByTrack.end() ||
+                target->second < 0 || target->second > 15) continue;
+            const int channel = target->second;
+            const auto &current = *region.ownedNotes;
+            if (std::none_of(current.begin(), current.end(),
+                             [channel](const auto &note) { return note.channel != channel; }))
+                continue;
+            auto notes = current;
+            for (auto &note : notes) note.channel = channel;
+            region.ownedNotes = std::make_shared<const std::vector<OwnedRegionNote>>(std::move(notes));
+            changed = true;
+        }
+        return changed;
     }
     bool setQuantize(int id, const RegionQuantize &settings) {
         if (!settings.valid()) return false;

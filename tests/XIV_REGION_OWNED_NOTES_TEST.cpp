@@ -45,5 +45,22 @@ int main() {
     assert(emptyTrack.replaceOwnedNotes(empty, {}));
     assert(!emptyTrack.trackIsIdentity(0, 100));
     assert(xiv::renderRegionNotes({{1, 0, 10, 20, 60, 80, 2}}, emptyTrack).empty());
+    // Rebuild can swap two track channels in one operation. Both owned and
+    // source-backed regions must render on the destination track's channel.
+    xiv::MidiRegionModel swapped;
+    const int horn = swapped.addInitial(1, 0, 100);
+    const int tuba = swapped.addInitial(2, 0, 100);
+    swapped.addInitial(3, 0, 100);
+    assert(swapped.replaceOwnedNotes(horn, {{1, 10, 20, 60, 80, 2}}));
+    assert(swapped.replaceOwnedNotes(tuba, {{1, 10, 20, 48, 80, 1}}));
+    const auto beforeSwap = swapped;
+    assert(swapped.reassignOwnedNoteChannels({{1, 1}, {2, 2}}));
+    assert(!swapped.reassignOwnedNoteChannels({{1, 1}, {2, 2}}));
+    const auto afterSwap = xiv::renderRegionNotes({{1, 3, 10, 20, 55, 80, 3}}, swapped);
+    assert(afterSwap.size() == 3);
+    for (const auto &note : afterSwap) assert(note.channel == note.trackIndex);
+    assert(beforeSwap.find(horn)->ownedNotes->front().channel == 2);
+    assert(beforeSwap.find(tuba)->ownedNotes->front().channel == 1);
+
     std::cout << "Owned note isolation, empty regions, moves, splits, and loops passed\n";
 }
