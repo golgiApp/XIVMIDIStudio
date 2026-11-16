@@ -1,6 +1,6 @@
 # XIV MIDI Studio
 
-![XIV MIDI Studio showing two selected Arrangement regions in the Piano Roll](docs/images/xiv-midi-studio.png)
+<img width="2558" height="1325" alt="Screenshot 2026-11-14 143643" src="https://github.com/user-attachments/assets/499c9753-d22d-4bb8-a187-0eccf9ece382" />
 
 
 **Arrange like a producer with XIV MIDI Studio, a MIDI-focused digital audio workstation built for Final Fantasy XIV Bard Performance.**
