@@ -1,6 +1,5 @@
 # XIV MIDI Studio
-
-<img width="2558" height="1325" alt="Screenshot 2026-11-14 143643" src="https://github.com/user-attachments/assets/499c9753-d22d-4bb8-a187-0eccf9ece382" />
+<img width="2552" height="1360" alt="image" src="https://github.com/user-attachments/assets/fdc9fce3-c5f2-43b0-8465-e6242f6047e2" />
 
 
 **Arrange like a producer with XIV MIDI Studio, a MIDI-focused digital audio workstation built for Final Fantasy XIV Bard Performance.**
