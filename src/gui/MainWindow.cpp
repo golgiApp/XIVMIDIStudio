@@ -1,3 +1,4 @@
+#include "WorkspaceControlIcons.h"
 #include "../support/XivInstrumentGroups.h"
 #include <QSlider>
 /*
@@ -422,7 +423,7 @@ MainWindow::MainWindow(QString initFile)
         slider->setValue(vertical ? 100 : 50);
         slider->setMaximumWidth(100);
         slider->setToolTip(vertical ? tr("Piano Roll vertical zoom") : tr("Piano Roll horizontal zoom"));
-        gridLayout->addWidget(new QLabel(vertical ? QStringLiteral("↕") : QStringLiteral("↔"), pianoHeader));
+        gridLayout->addWidget(new xiv::ZoomIndicator(vertical, pianoHeader));
         gridLayout->addWidget(slider);
         connect(slider, &QSlider::valueChanged, mw_matrixWidget,
                 vertical ? &MatrixWidget::setVerticalZoom : &MatrixWidget::setHorizontalZoom);
@@ -1506,6 +1507,9 @@ MainWindow::MainWindow(QString initFile)
     snapButton->setFixedWidth(34);
     addControl(_actionMap.value("metronome"), true);
     auto *master = new QToolButton(controlBar);
+    master->setIconSize(QSize(24, 24));
+    master->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    master->setFixedSize(38, 34);
     master->setToolTip(tr("Master playback volume"));
     master->setAccessibleName(tr("Master playback volume"));
     auto *volumeMenu = new QMenu(master);
@@ -1530,7 +1534,8 @@ MainWindow::MainWindow(QString initFile)
         _settings->setValue("playback/master_volume", volume->value());
         _settings->setValue("playback/master_muted", mute->isChecked());
         MidiOutput::setMasterVolume(mute->isChecked() ? 0.0 : volume->value() / 100.0);
-        master->setText(mute->isChecked() || !volume->value() ? QStringLiteral("🔇") : QStringLiteral("🔊"));
+        master->setIcon(xiv::controlIcon(mute->isChecked() || !volume->value()
+            ? xiv::ControlIcon::Muted : xiv::ControlIcon::Volume));
     };
     connect(volume, &QSlider::valueChanged, this, applyVolume);
     connect(mute, &QCheckBox::toggled, this, applyVolume);
@@ -1549,7 +1554,7 @@ MainWindow::MainWindow(QString initFile)
     verticalZoom->setValue(84);
     verticalZoom->setMaximumWidth(80);
     verticalZoom->setToolTip(tr("Arrangement vertical zoom"));
-    bar->addWidget(new QLabel(QStringLiteral("↕"), controlBar));
+    bar->addWidget(new xiv::ZoomIndicator(true, controlBar));
     bar->addWidget(verticalZoom);
     connect(verticalZoom, &QSlider::valueChanged, this, [this, autoZoom](int value) {
         autoZoom->setChecked(false);
@@ -1568,7 +1573,7 @@ MainWindow::MainWindow(QString initFile)
     horizontalZoom->setValue(50);
     horizontalZoom->setMaximumWidth(80);
     horizontalZoom->setToolTip(tr("Arrangement horizontal zoom"));
-    bar->addWidget(new QLabel(QStringLiteral("↔"), controlBar));
+    bar->addWidget(new xiv::ZoomIndicator(false, controlBar));
     bar->addWidget(horizontalZoom);
     connect(horizontalZoom, &QSlider::valueChanged, _arrangementWidget, &ArrangementWidget::setTimelineZoom);
     for (bool zoomIn : {false, true}) {

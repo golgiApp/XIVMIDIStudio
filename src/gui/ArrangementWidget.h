@@ -837,8 +837,9 @@ protected:
                        .arg(i + 1).arg(channel >= 0 && channel < 16
                             ? QString::number(channel + 1) : tr("Unassigned")));
 
-            const int program = channel >= 0 && channel < 16
-                ? _file->channel(channel)->progAtTick(_file->cursorTick()) : -1;
+            // Resolve this track's own program; shared channels may contain
+            // program events belonging to other tracks.
+            const int program = t->progAtTick(_file->cursorTick());
             drawButton(p, instrumentRect(y), TrackControl::Instrument, false, QColor("#45647F"), program);
             drawButton(p, visibilityRect(y), TrackControl::Visibility, !t->hidden(), QColor("#1767A4"));
             drawButton(p, muteRect(y), TrackControl::Mute, t->muted(), QColor("#A83C4B"));
