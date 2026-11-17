@@ -125,6 +125,9 @@ public:
     void setRegionView(const xiv::MidiRegionModel &model, int selectedRegionId,
                        const std::set<int> &selectedRegionIds, bool showAllRegions, bool navigate = false);
     void refreshRegionViewNotes();
+    int snapVisibleTick(int tick);
+    void selectRegionNotes(bool selected);
+    void highlightProgramConflicts(const std::vector<xiv::RenderedRegionNote> &notes);
     void setPianoRollGridMode(xiv::PianoRollGridMode mode);
     std::function<void(xiv::MidiRegionModel, const QString &)> commitProjectedRegions;
     bool allTracksEditing() const { return _regionViewEnabled && (_regionShowAll || _selectedViewRegionIds.size() > 1); }

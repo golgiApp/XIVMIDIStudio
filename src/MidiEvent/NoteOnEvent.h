@@ -44,6 +44,7 @@ class OffEvent;
  */
 class NoteOnEvent : public OnEvent {
 public:
+    int playbackProgram = -1; // detached rendered schedule only
     /**
      * \brief Creates a new NoteOnEvent.
      * \param note MIDI note number (0-127)

@@ -22,6 +22,8 @@
 #endif
 
 #include "MatrixWidget.h"
+#include "../region/QuantizePresets.h"
+#include "../region/GuitarPrograms.h"
 #include "../region/RegionForceLegato.h"
 #include "../region/ProjectedRegionEdits.h"
 #include "../region/MidiRegionTransfer.h"
@@ -893,6 +895,11 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
                 MidiTrack *track = file->tracks()->at(n.trackIndex);
                 if (track && track->color()) accent = *track->color();
             }
+            if (xiv::isGuitarProgram(n.program)) {
+                const auto index = std::find(xiv::guitarPrograms.begin(), xiv::guitarPrograms.end(), n.program) - xiv::guitarPrograms.begin();
+                static const char *colors[] = {"#E87572", "#78BFE8", "#98C66A", "#E5A15D", "#C28BE2"};
+                accent = QColor(colors[index]);
+            }
             painter->fillRect(QRect(x, y + 1, ex - x, h), accent);
             painter->setPen(selected ? QColor("#FFE0A4") : accent.darker(150));
             painter->drawRect(QRect(x, y + 1, std::max(0, ex - x - 1),
@@ -1516,6 +1523,15 @@ void MatrixWidget::setRegionView(const xiv::MidiRegionModel &model,
     const bool changedSelection = _selectedViewRegionId != selectedRegionId ||
                                   _selectedViewRegionIds != selectedRegionIds ||
                                   _regionShowAll != showAllRegions;
+    using NoteIdentity = std::tuple<int, int, int>;
+    std::set<std::pair<NoteIdentity, int>> selectedOccurrences;
+    std::map<NoteIdentity, int> occurrences;
+    if (!changedSelection) for (std::size_t i = 0; i < _regionFullNotes.size(); ++i) {
+        const auto &n = _regionFullNotes[i];
+        const NoteIdentity key{n.regionId, n.sourceId, n.ownedNoteId};
+        const int occurrence = occurrences[key]++;
+        if (_allSelection.count(static_cast<int>(i) + 1)) selectedOccurrences.emplace(key, occurrence);
+    }
     if (changedSelection) {
         _regionSelection.clear();
         _allSelection.clear();
@@ -1531,13 +1547,22 @@ void MatrixWidget::setRegionView(const xiv::MidiRegionModel &model,
     // Existing native edit tools remain enabled where their source note
     // positions still equal the arranged display. Transformed/looped regions
     // need dedicated region-note IDs before editing may safely be enabled.
-    _regionEditingSafe = !allTracksEditing() && focusedRegion && !focusedRegion->ownedNotes &&
+    _regionEditingSafe = !allTracksEditing() && focusedRegion && focusedRegion->program < 0 && !focusedRegion->ownedNotes &&
         focusedRegion->startTick == focusedRegion->sourceStartTick &&
         focusedRegion->loopLengthTicks == 0 && !focusedRegion->quantize.active() &&
         focusedRegion->endNoteMode == xiv::CrossingNoteMode::Keep &&
         (focusedRegion->sourceStartTick == 0 ||
          focusedRegion->startNoteMode == xiv::CrossingNoteMode::Keep);
     refreshRegionViewNotes();
+    if (!changedSelection) {
+        _allSelection.clear();
+        occurrences.clear();
+        for (std::size_t i = 0; i < _regionFullNotes.size(); ++i) {
+            const auto &n = _regionFullNotes[i];
+            const NoteIdentity key{n.regionId, n.sourceId, n.ownedNoteId};
+            if (selectedOccurrences.count({key, occurrences[key]++})) _allSelection.insert(static_cast<int>(i) + 1);
+        }
+    }
 
     if (navigate && changedSelection && file && !showAllRegions) {
         const auto *region = _regionViewModel.find(selectedRegionId);
@@ -1581,7 +1606,7 @@ void MatrixWidget::refreshRegionViewNotes() {
             if (index < 0) continue;
             source.push_back({id++, index, note->midiTime(),
                               note->offEvent()->midiTime(), note->note(),
-                              note->velocity(), note->channel()});
+                              note->velocity(), note->channel(), xiv::guitarProgramOrDefault(note->track()->progAtTick(note->midiTime()))});
         }
     }
     _regionFullNotes = xiv::renderRegionNotes(source, _regionViewModel);
@@ -1615,6 +1640,37 @@ QRect MatrixWidget::regionNoteRect(const xiv::RenderedRegionNote &note) {
                  std::max(1, static_cast<int>(lineHeight())));
 }
 
+int MatrixWidget::snapVisibleTick(int tick) {
+    if (!file || !EventTool::magnetEnabled() || !(EventTool::magnetMode() & EventTool::SNAP_GRID)) return tick;
+    const auto [left, right] = visibleGridCell(tick);
+    return tick - left <= right - tick ? left : right;
+}
+void MatrixWidget::highlightProgramConflicts(const std::vector<xiv::RenderedRegionNote> &notes) {
+    _regionSelection.clear();
+    _allSelection.clear();
+    for (std::size_t i = 0; i < _regionFullNotes.size(); ++i) {
+        const auto &n = _regionFullNotes[i];
+        const int id = n.ownedNoteId ? n.ownedNoteId : n.sourceId;
+        if (std::none_of(notes.begin(), notes.end(), [&](const auto &conflict) {
+            return n.regionId == conflict.regionId && n.startTick == conflict.startTick &&
+                   n.endTick == conflict.endTick && n.pitch == conflict.pitch;
+        })) continue;
+        _allSelection.insert(static_cast<int>(i) + 1);
+        if (n.regionId == _selectedViewRegionId) _regionSelection.insert(id);
+    }
+    update();
+}
+void MatrixWidget::selectRegionNotes(bool selected) {
+    _regionSelection.clear();
+    _allSelection.clear();
+    if (selected) for (std::size_t i = 0; i < _regionFullNotes.size(); ++i) {
+        const auto &n = _regionFullNotes[i];
+        if (n.regionId != _selectedViewRegionId) continue;
+        _regionSelection.insert(n.ownedNoteId ? n.ownedNoteId : n.sourceId);
+        _allSelection.insert(static_cast<int>(i) + 1);
+    }
+    update();
+}
 void MatrixWidget::setPianoRollGridMode(xiv::PianoRollGridMode mode) {
     if (_pianoRollGridMode == mode) return;
     _pianoRollGridMode = mode;
@@ -1655,7 +1711,7 @@ std::pair<int, int> MatrixWidget::noteEntryBounds(const QPoint &press, const QPo
     if (start >= limit) return {start, start};
     if (std::abs(point.x() - press.x()) >= QApplication::startDragDistance())
         return {start, std::clamp(regionEditTick(point.x()), start + 1, limit)};
-    return {start, start + std::min(std::max(1, right - left), limit - start)};
+    return {start, start + std::min(std::min(file->ticksPerQuarter(), std::max(1, right - left)), limit - start)};
 }
 
 std::vector<xiv::OwnedRegionNote> MatrixWidget::regionNotesForEdit(const xiv::MidiRegion &region) const {
@@ -1664,7 +1720,7 @@ std::vector<xiv::OwnedRegionNote> MatrixWidget::regionNotesForEdit(const xiv::Mi
     for (const auto &note : _regionFullNotes) {
         if (note.regionId != region.id) continue;
         notes.push_back({note.sourceId, note.sourceSliceStartTick, note.sourceSliceEndTick,
-                         note.pitch, note.velocity, note.channel});
+                         note.pitch, note.velocity, note.channel, note.program});
     }
     return notes;
 }
@@ -1696,6 +1752,7 @@ void MatrixWidget::auditionRegionNote(const QPoint &point) {
     if (!note || note->trackIndex < 0 || note->trackIndex >= file->numTracks()) return;
     NoteOnEvent preview(note->pitch, note->velocity, note->channel,
                         file->track(note->trackIndex), false);
+    preview.playbackProgram = note->program;
     preview.setFile(file);
     preview.setDetachedMidiTime(note->startTick);
     MidiPlayer::play(&preview, 250);
@@ -1963,7 +2020,7 @@ bool MatrixWidget::deleteAllTracksSelection() {
                     if (selected) ownedRemovals.insert(note.ownedNoteId);
                 } else if (!selected) {
                     notes.push_back({note.sourceId, note.sourceSliceStartTick, note.sourceSliceEndTick,
-                                     note.pitch, note.velocity, note.channel});
+                                     note.pitch, note.velocity, note.channel, note.program});
                 }
             }
             if (region->ownedNotes) {
@@ -2190,17 +2247,23 @@ void MatrixWidget::showNoteMenu(const QPoint &position) {
     add(menu, tr("Copy"), QStringLiteral("copy"));
     add(menu, tr("Delete Selected Notes"), QStringLiteral("delete"));
     menu.addSeparator();
-    add(menu, tr("Quantize Selected Notes"), QStringLiteral("quantize"));
     auto *transpose = menu.addMenu(tr("Transpose Selected Notes"));
     add(*transpose, tr("Transpose…"), QStringLiteral("transpose"));
     add(*transpose, tr("Octave Up"), QStringLiteral("transpose_up"));
     add(*transpose, tr("Octave Down"), QStringLiteral("transpose_down"));
-    add(menu, tr("Force Legato"), QStringLiteral("xiv_note_legato"));
     add(menu, tr("Remove Overlaps (8 Ticks)"), QStringLiteral("xiv_note_overlaps"));
+    add(menu, tr("Force Legato"), QStringLiteral("xiv_note_legato"));
     auto *filter = menu.addMenu(tr("Chord Voice Filter (FFXIV)"));
     add(*filter, tr("Keep Highest Note"), QStringLiteral("ffxiv_keep_highest"));
     add(*filter, tr("Keep Lowest Note"), QStringLiteral("ffxiv_keep_lowest"));
     add(*filter, tr("Keep Inner Notes"), QStringLiteral("ffxiv_keep_inner"));
+    auto *quantizeMenu = menu.addMenu(tr("Quantize Selected Notes"));
+    for (int i = 0; i < 7; ++i) {
+        auto *action = quantizeMenu->addAction(tr(xiv::quantizeNames[i]));
+        connect(action, &QAction::triggered, this, [this, i]() {
+            editSelectedNotes(QStringLiteral("quantize_%1").arg(i), 0);
+        });
+    }
     menu.exec(position);
 }
 
@@ -2237,7 +2300,8 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
     const auto &selection = allTracksEditing() ? _allSelection : _regionSelection;
     if (selection.empty() || (allTracksEditing() ? !canEditAllTracks() : !focused)) return false;
 
-    const bool quantize = command == QStringLiteral("quantize");
+    const bool quantize = command.startsWith(QStringLiteral("quantize"));
+    const int presetIndex = command.startsWith(QStringLiteral("quantize_")) ? command.mid(9).toInt() : -1;
     std::set<std::uint64_t> remove;
     if (command.startsWith(QStringLiteral("ffxiv_keep_"))) {
         std::vector<FfxivVoice::Note> input;
@@ -2263,6 +2327,18 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
         if (!region) continue;
         auto notes = allTracksEditing() ? *region->ownedNotes : regionNotesForEdit(*focused);
         const int offset = region->startTick - region->sourceStartTick;
+        if (quantize && !allTracksEditing() && region->quantize.active()) {
+            for (auto &note : notes) for (const auto &rendered : _regionFullNotes) {
+                if (rendered.regionId == regionId &&
+                    (rendered.ownedNoteId ? rendered.ownedNoteId : rendered.sourceId) == note.id) {
+                    note.startTick = rendered.startTick - offset;
+                    note.endTick = rendered.endTick - offset;
+                    break;
+                }
+            }
+            updated.setQuantize(regionId, {});
+            changed = true;
+        }
         for (auto &note : notes) {
             if (!selection.count(note.id)) continue;
             if (semitones) {
@@ -2276,7 +2352,14 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
             } else if (quantize && note.startTick >= region->sourceStartTick && note.startTick < region->sourceEndTick) {
                 const int tick = note.startTick + offset;
                 const auto [left, right] = visibleGridCell(tick);
-                const int target = tick - left <= right - tick ? left : right;
+                int target = tick - left <= right - tick ? left : right;
+                if (presetIndex >= 0) {
+                    auto quantizedRegion = *region;
+                    quantizedRegion.quantize = xiv::quantizePreset(presetIndex, file->ticksPerQuarter());
+                    int64_t start = tick, end = note.endTick + offset;
+                    xiv::quantizeRegionNote(quantizedRegion, start, end);
+                    target = static_cast<int>(start);
+                }
                 const int delta = std::clamp(target, region->startTick, region->endTick() - 1) - tick;
                 const int64_t end = static_cast<int64_t>(note.endTick) + delta;
                 if (delta && end <= std::numeric_limits<int>::max()) {
@@ -2298,7 +2381,7 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
     if (!changed) return false;
     const auto label = quantize ? tr("Quantize Selected Notes") :
         semitones ? tr("Transpose Selected Notes") : tr("Filter Selected Chord Voices");
-    if (allTracksEditing()) commitProjectedRegions(std::move(updated), label);
+    if (allTracksEditing() || quantize) commitProjectedRegions(std::move(updated), label);
     else commitRegionNotes(focused->id, *updated.find(focused->id)->ownedNotes, label);
     // The commit refreshes the rendered notes and clears the selection.
     // Match their owned IDs because pitch changes can reorder rendered notes.
@@ -2871,7 +2954,10 @@ void MatrixWidget::leaveEvent(QEvent *event) {
 
 void MatrixWidget::mousePressEvent(QMouseEvent *event) {
     if (file && seekTimeRequested && event->button() == Qt::LeftButton &&
-        event->modifiers() == Qt::NoModifier && TimeLineArea.contains(event->position())) {
+        event->modifiers() == Qt::NoModifier &&
+        (TimeLineArea.contains(event->position()) ||
+         (event->position().x() >= lineNameWidth && event->position().y() >= timeHeight &&
+          std::abs(event->position().x() - xPosOfMs(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick()))) <= 4))) {
         _rulerDragging = true;
         seekTimeRequested(msOfXPos(qRound(event->position().x())));
         event->accept();

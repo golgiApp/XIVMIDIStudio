@@ -23,6 +23,7 @@ struct RegionClipboard {
     int duration = 0;
     std::vector<OwnedRegionNote> notes;
     std::string name;
+    int program = -1;
 };
 
 inline int insertOwnedRegion(MidiRegionModel &model, int track, int start, int trackCount,
@@ -42,6 +43,7 @@ inline int insertOwnedRegion(MidiRegionModel &model, int track, int start, int t
     model.move(id, start);
     model.replaceOwnedNotes(id, std::move(notes));
     model.rename(id, clip.name);
+    if (clip.program >= 0) model.setProgram(id, clip.program);
     return id;
 }
 
@@ -107,11 +109,12 @@ inline bool consolidateRegions(MidiRegionModel &model, const std::set<int> &ids,
         if (noteEnd > std::numeric_limits<int>::max()) return false;
         notes.push_back({static_cast<int>(notes.size()) + 1, note.startTick - first,
                          note.endTick - first, note.pitch, note.velocity,
-                         note.trackIndex == destinationTrack ? note.channel : destinationChannel});
+                         note.trackIndex == destinationTrack ? note.channel : destinationChannel, note.program});
     }
 
     MidiRegion result{primaryId, destinationTrack, destinationStart, 0, last - first};
     result.name = primary->name;
+    result.program = ids.size() == 1 ? primary->program : -1;
     result.ownedNotes = std::make_shared<const std::vector<OwnedRegionNote>>(std::move(notes));
     std::vector<MidiRegion> regions;
     for (const auto &region : model.regions())

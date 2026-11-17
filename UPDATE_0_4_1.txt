@@ -1,0 +1,30 @@
+XIV MIDI Studio 0.4.1 source update
+
+Base: b42c550 (Release 0.4.0 instrument, editing, and workflow improvements).
+
+HOW TO APPLY
+1. Extract this ZIP.
+2. Copy its contents into your existing repository root, merging folders and replacing matching files. Do not delete or replace entire folders.
+3. Include the hidden .github folder, the two new src/region headers, and the new regression test.
+4. Commit and run the existing Windows build workflow. Its artifact is labeled 0.4.1.
+
+This is replacement source, not a Windows executable. Existing SoundFonts and resources stay in your repository.
+
+VALIDATION
+- 20 standalone C++ test programs passed, including the new guitar/quantize regression test.
+- The Qt tempo-map test also passed.
+- Changed editor, playback, MIDI export, MIDI output, tutorial, and FluidSynth code passed C++20 syntax checks using Qt 6 and FluidSynth 2.3.6 headers.
+- Existing Qt globalPos deprecation warnings remain.
+- git diff --check passed.
+- A Windows link/build and interactive/audio run were not available in this environment.
+
+WINDOWS SMOKE CHECK
+- Start the app, check Don't Show Again, choose a startup action, and relaunch. Confirm New Project and re-enable through View.
+- Try both zoom sliders and all four grid modes. Drag the playhead line and click either ruler while playing.
+- During playback, move, trim, loop, split, and transpose a region; confirm playback continues and no notes remain stuck. Undo and Redo.
+- On a guitar track, assign two region sounds, join them, and verify colors and playback. Save As MIDI and reopen to verify sounds. Try overlapping sounds, each resolution choice, and Cancel.
+- Apply every quantize preset to selected notes and a region. Apply to Entire Project with hidden/muted tracks, then Undo.
+- Change a track channel with existing notes. Test the sharing warning, automatic free-channel allocation on instrument change, and the no-free-channel message.
+- Change master volume and mute during playback. Export the same project at two master-volume settings and confirm MIDI note velocities and controllers are unchanged.
+
+External MIDI devices must support Universal Master Volume for the master control. Built-in FluidSynth volume is applied directly.

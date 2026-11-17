@@ -242,6 +242,7 @@ public:
     // === Audio Settings ===
     void setAudioDriver(const QString &driver);
     void setGain(double gain);
+    void setPlaybackVolume(double volume);
     void setSampleRate(double rate);
     void setSampleFormat(const QString &format);
     void setReverbEngine(const QString &engine);
@@ -323,6 +324,7 @@ private:
     QString _audioDriverName;
     QString _reverbEngine;
     double _gain;
+    double _playbackVolume = 1.0;
     double _sampleRate;
     bool _reverbEnabled;
     bool _chorusEnabled;

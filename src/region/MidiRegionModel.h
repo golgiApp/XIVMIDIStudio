@@ -57,11 +57,12 @@ struct OwnedRegionNote {
     int pitch;
     int velocity;
     int channel;
+    int program = -1; // -1 inherits the track instrument
 
     bool valid() const {
         return id > 0 && startTick >= 0 && endTick > startTick &&
                pitch >= 0 && pitch < 128 && velocity > 0 && velocity < 128 &&
-               channel >= 0 && channel < 16;
+               channel >= 0 && channel < 16 && program >= -1 && program < 128;
     }
 };
 
@@ -90,12 +91,13 @@ struct MidiRegion {
     // Replacing the immutable list makes editing a duplicate independent.
     std::shared_ptr<const std::vector<OwnedRegionNote>> ownedNotes{};
     std::string name;
+    int program = -1; // optional per-region instrument override
 
     int duration() const { return sourceEndTick - sourceStartTick; }
     int displayDuration() const { return loopLengthTicks > 0 ? loopLengthTicks : duration(); }
     int endTick() const { return startTick + displayDuration(); }
     bool valid() const {
-        return quantize.valid() && id > 0 && trackIndex >= 0 && startTick >= 0 && sourceStartTick >= 0 &&
+        return program >= -1 && program < 128 && quantize.valid() && id > 0 && trackIndex >= 0 && startTick >= 0 && sourceStartTick >= 0 &&
                validCrossingNoteMode(startNoteMode) && validCrossingNoteMode(endNoteMode) &&
                sourceEndTick > sourceStartTick && loopLengthTicks >= 0 &&
                (loopLengthTicks == 0 || loopLengthTicks >= duration()) &&
@@ -170,6 +172,19 @@ public:
             changed = true;
         }
         return changed;
+    }
+    bool setProgram(int id, int program) {
+        if (program < -1 || program > 127) return false;
+        for (auto &region : _regions) if (region.id == id) {
+            region.program = program;
+            if (region.ownedNotes) {
+                auto notes = *region.ownedNotes;
+                for (auto &note : notes) note.program = -1;
+                region.ownedNotes = std::make_shared<const std::vector<OwnedRegionNote>>(std::move(notes));
+            }
+            return true;
+        }
+        return false;
     }
     bool setQuantize(int id, const RegionQuantize &settings) {
         if (!settings.valid()) return false;
@@ -284,7 +299,7 @@ public:
             r.endNoteMode = behavior;
             const int newId = _nextId++;
             _regions.push_back({newId, r.trackIndex, timelineTick, sourceSplit,
-                                oldEnd, behavior, previousEndMode, 0, r.quantize, r.ownedNotes, r.name});
+                                oldEnd, behavior, previousEndMode, 0, r.quantize, r.ownedNotes, r.name, r.program});
             return newId;
         }
         return 0;
@@ -361,7 +376,7 @@ public:
         _regions.push_back({newId, source.trackIndex, newStartTick,
                             source.sourceStartTick, source.sourceEndTick,
                             source.startNoteMode, source.endNoteMode,
-                            source.loopLengthTicks, source.quantize, source.ownedNotes, source.name});
+                            source.loopLengthTicks, source.quantize, source.ownedNotes, source.name, source.program});
         return newId;
     }
     // Trim the left boundary while preserving the source/timeline offset.
@@ -433,7 +448,7 @@ public:
         std::vector<MidiRegion> track;
         for (const auto &r : _regions) {
             if (r.trackIndex == trackIndex) {
-                if (r.ownedNotes || r.startTick != r.sourceStartTick) return false;
+                if (r.program >= 0 || r.ownedNotes || r.startTick != r.sourceStartTick) return false;
                 track.push_back(r);
             }
         }

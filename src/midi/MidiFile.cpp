@@ -46,6 +46,7 @@
 #include "math.h"
 #include <algorithm>
 #include "TempoMapEdit.h"
+#include "../region/GuitarPrograms.h"
 
 static QList<MidiEvent *> getSortedEvents(QMultiMap<int, MidiEvent *> *map) {
     QList<MidiEvent *> events = map->values();
@@ -57,6 +58,14 @@ static QList<MidiEvent *> getSortedEvents(QMultiMap<int, MidiEvent *> *map) {
         }
         if (end - start > 1) {
             std::reverse(events.begin() + start, events.begin() + end);
+            std::stable_sort(events.begin() + start, events.begin() + end, [](auto *a, auto *b) {
+                const auto rank = [](MidiEvent *event) {
+                    if (dynamic_cast<OffEvent *>(event)) return 0;
+                    if (dynamic_cast<NoteOnEvent *>(event)) return 2;
+                    return 1;
+                };
+                return rank(a) < rank(b);
+            });
         }
         start = end;
     }
@@ -1563,7 +1572,7 @@ void MidiFile::buildRenderedNoteEvents(QMultiMap<int, MidiEvent *> &destination,
             byId.insert(id, on);
             source.push_back({id, trackIndex, on->midiTime(),
                               on->offEvent()->midiTime(), on->note(),
-                              on->velocity(), on->channel()});
+                              on->velocity(), on->channel(), xiv::guitarProgramOrDefault(on->track()->progAtTick(on->midiTime()))});
         }
     }
     for (const auto &note : xiv::renderRegionNotes(source, _regionLayout)) {
@@ -1582,6 +1591,14 @@ void MidiFile::buildRenderedNoteEvents(QMultiMap<int, MidiEvent *> &destination,
             if (!original || !original->offEvent()) continue;
             on = new NoteOnEvent(*original);
             off = new OffEvent(*original->offEvent());
+        }
+        if (note.program >= 0 || xiv::isGuitarProgram(_tracks->at(note.trackIndex)->progAtTick(0))) {
+            const int program = note.program >= 0 ? note.program : _tracks->at(note.trackIndex)->progAtTick(note.startTick);
+            on->playbackProgram = program;
+            auto *change = new ProgChangeEvent(note.channel, program, _tracks->at(note.trackIndex));
+            change->setDetachedMidiTime(note.startTick);
+            owned.append(change);
+            destination.insert(note.startTick, change);
         }
         off->setOnEvent(on);
         on->setDetachedMidiTime(note.startTick);
@@ -1625,6 +1642,7 @@ void MidiFile::preparePlayerData(int tickFrom) {
                         replacedNote = on->offEvent() != nullptr;
                     else if (auto *off = dynamic_cast<OffEvent *>(event))
                         replacedNote = dynamic_cast<NoteOnEvent *>(off->onEvent()) != nullptr;
+                    else if (dynamic_cast<ProgChangeEvent *>(event) && xiv::isGuitarProgram(event->track()->progAtTick(0))) replacedNote = true;
                 }
             }
             if (replacedNote) { ++it; continue; }
@@ -1834,6 +1852,7 @@ bool MidiFile::writeArrangedMidi(const QString &path) {
                         replaced = on->offEvent() != nullptr;
                     else if (auto *off = dynamic_cast<OffEvent *>(event))
                         replaced = dynamic_cast<NoteOnEvent *>(off->onEvent()) != nullptr;
+                    else if (dynamic_cast<ProgChangeEvent *>(event) && xiv::isGuitarProgram(event->track()->progAtTick(0))) replaced = true;
                 }
             }
             if (!replaced) allEvents.insert(it.key(), event);
@@ -1947,6 +1966,7 @@ bool MidiFile::saveForExport(QString path, int startTick, int endTick) {
             if (i < 16 && event->track()) {
                 const int trackIndex = _tracks->indexOf(event->track());
                 if (trackIndex >= 0 && regionTrackHasChanged(trackIndex)) {
+                    if (dynamic_cast<ProgChangeEvent *>(event) && xiv::isGuitarProgram(event->track()->progAtTick(0))) continue;
                     if (auto *on = dynamic_cast<NoteOnEvent *>(event)) {
                         if (on->offEvent()) continue;
                     } else if (auto *off = dynamic_cast<OffEvent *>(event)) {

@@ -69,6 +69,10 @@
 #include "../midi/MidiFile.h"
 #include "../midi/MidiPlayer.h"
 #include "../midi/PlayerThread.h"
+#include "PianoRollGrid.h"
+#include <QMessageBox>
+#include <QPushButton>
+#include "../region/GuitarPrograms.h"
 #include "../midi/MidiInput.h"
 #include "../midi/MidiTrack.h"
 #include "../midi/MidiChannel.h"
@@ -107,6 +111,8 @@ public:
     // Commit a clicked time to the actual MIDI transport cursor, not just
     // the arrangement drawing. The owner handles playback/pause state.
     std::function<void(int)> seekTimeRequested;
+    std::function<void(bool)> selectRegionNotesRequested;
+    std::function<void(const std::vector<xiv::RenderedRegionNote> &)> highlightGuitarConflicts;
     // Selection and region edits update the lower Piano Roll's projection.
     std::function<void()> regionViewChanged;
     std::function<void()> inspectorChanged;
@@ -199,7 +205,7 @@ public:
     }
 
     bool canEditQuantize() const {
-        return _file && _regionsReady && !MidiPlayer::isPlaying() && !MidiInput::recording();
+        return _file && _regionsReady && !MidiInput::recording();
     }
     // Called inside the track channel protocol action.
     void reassignRegionChannels(int trackIndex, int channel) {
@@ -216,6 +222,47 @@ public:
         _file->protocol()->enterUndoStep(new ProtocolItem(before, &_regionHistory));
     }
 
+    // Called within the track instrument's existing Undo action.
+    void clearTrackGuitarPrograms(int trackIndex) {
+        auto *before = _regionHistory.copy();
+        std::vector<int> targets;
+        for (const auto &region : _regions.regions()) {
+            if (region.trackIndex != trackIndex) continue;
+            if (region.program >= 0 || (region.ownedNotes && std::any_of(
+                region.ownedNotes->begin(), region.ownedNotes->end(), [](const auto &note) { return note.program >= 0; })))
+                targets.push_back(region.id);
+        }
+        if (targets.empty()) { delete before; return; }
+        for (int id : targets) _regions.setProgram(id, -1);
+        _file->protocol()->enterUndoStep(new ProtocolItem(before, &_regionHistory));
+    }
+    std::function<bool()> ensureRegionProgramChannel;
+    bool selectedTrackIsGuitar() const {
+        return _selected && xiv::isGuitarProgram(_selected->progAtTick(0));
+    }
+    void setRegionProgram(int program) {
+        if (!canEditQuantize() || !selectedTrackIsGuitar() || !_regions.find(_selectedRegionId)) return;
+        if (ensureRegionProgramChannel && !ensureRegionProgramChannel()) return;
+        auto *before = _regionHistory.copy();
+        if (!_regions.setProgram(_selectedRegionId, program)) { delete before; return; }
+        finishRegionEdit(before, tr("Change Region Guitar Sound"));
+    }
+    void showRegionGuitarMenu(const QPoint &position) {
+        if (!selectedTrackIsGuitar()) return;
+        const auto *region = _regions.find(_selectedRegionId);
+        if (!region) return;
+        QMenu menu(this);
+        for (int i = 0; i < 5; ++i) {
+            auto *action = menu.addAction(tr(xiv::guitarNames[i]));
+            action->setCheckable(true);
+            action->setChecked(region->program == xiv::guitarPrograms[i]);
+            connect(action, &QAction::triggered, this, [this, i]() { setRegionProgram(xiv::guitarPrograms[i]); });
+        }
+        menu.addSeparator();
+        connect(menu.addAction(tr("Reset to Track Sound")), &QAction::triggered, this,
+            [this]() { setRegionProgram(-1); });
+        menu.exec(position);
+    }
     enum class QuantizeScope { Region, Track, Project };
     void applyQuantize(const xiv::RegionQuantize &settings,
                        QuantizeScope scope = QuantizeScope::Region) {
@@ -240,6 +287,9 @@ public:
         for (int id : targets) _regions.setQuantize(id, settings);
         finishRegionEdit(before, description);
     }
+    void setGridMode(xiv::PianoRollGridMode mode) { _gridMode = mode; update(); }
+    int snapVisibleTick(int tick) const { return snapTick(tick); }
+    xiv::PianoRollGridMode _gridMode = xiv::PianoRollGridMode::Auto;
     void setSnapToGrid(bool on) { _snapToGrid = on; update(); }
 
     // Arrangement and Piano Roll use independent horizontal scroll positions.
@@ -420,7 +470,9 @@ public:
         _regionTracks = tracks;
         _regionHistoryRefreshPending = true;
         _regionTrackEditPendingSave = true;
-        _file->setRegionLayout(_regions);
+        const auto publish = [this]() { _file->setRegionLayout(_regions); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
+        else publish();
         _file->protocol()->enterUndoStep(new ProtocolItem(before, &_regionHistory));
     }
 
@@ -540,7 +592,9 @@ public:
             if (!_regionsReady) loadRegionLayout();
             _regionsReady = true;
         }
-        _file->setRegionLayout(_regions);
+        const auto publish = [this]() { _file->setRegionLayout(_regions); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
+        else publish();
         publishCycle();
         setMinimumHeight(std::max(130, rulerHeight() + count * laneHeight));
         updateGeometry();
@@ -575,15 +629,17 @@ public:
             entry.insert(QStringLiteral("endNoteMode"), static_cast<int>(r.endNoteMode));
             entry.insert(QStringLiteral("loopLengthTicks"), r.loopLengthTicks);
             entry.insert(QStringLiteral("quantizeGridTicks"), r.quantize.gridTicks);
+            entry.insert(QStringLiteral("program"), r.program);
+            if (r.program >= 0) version = 3;
             entry.insert(QStringLiteral("quantizeStrength"), r.quantize.strength);
             entry.insert(QStringLiteral("quantizeSwing"), r.quantize.swing);
             if (!r.name.empty()) entry.insert(QStringLiteral("name"), QString::fromStdString(r.name));
             if (r.ownedNotes) {
-                version = 2;
+                version = 3;
                 QJsonArray notes;
                 for (const auto &note : *r.ownedNotes)
                     notes.append(QJsonArray{note.id, note.startTick, note.endTick,
-                                            note.pitch, note.velocity, note.channel});
+                                            note.pitch, note.velocity, note.channel, note.program});
                 entry.insert(QStringLiteral("ownedNotes"), notes);
             }
             items.append(entry);
@@ -711,33 +767,28 @@ protected:
         const int tpq = std::max(1, _file->ticksPerQuarter());
         const int endMs = _originMs + int(std::max(0, width() - headerWidth) / _scale);
         const int endTick = std::max(0, _file->tick(endMs));
-        const int firstQuarter = std::max(0, _file->tick(_originMs) / tpq - 2);
-        const int lastQuarter = std::max(firstQuarter, endTick / tpq + 2);
         // Cache the grid positions once, then draw them after EACH lane's
         // background. Previously the grid was painted here and the opaque
         // lane backgrounds immediately covered it.
         QVector<int> beatGridXs;
         QVector<int> subBeatGridXs;
         QVector<QPair<int, int>> measureMarks;
-        const int step16 = std::max(1, tpq / 4);
-        for (int q = firstQuarter; q <= lastQuarter && q - firstQuarter < 2000; ++q) {
-            const int quarterTick = q * tpq;
-            const int x = xForMs(_file->msOfTick(quarterTick));
-            if (x >= headerWidth && x <= width()) beatGridXs.append(x);
-            // Show sixteenth guides only when zoomed in sufficiently.
-            if (xForMs(_file->msOfTick(quarterTick + step16)) - x >= 12) {
-                for (int sub = 1; sub < 4; ++sub) {
-                    const int subX = xForMs(_file->msOfTick(quarterTick + sub * step16));
-                    if (subX >= headerWidth && subX <= width()) subBeatGridXs.append(subX);
-                }
-            }
-        }
         int barStart = 0, barEnd = 0;
         int bar = _file->measure(std::max(0, _file->tick(_originMs)), &barStart, &barEnd);
         for (int step = 0; step < 1000 && barStart <= endTick; ++step) {
             const int x = xForMs(_file->msOfTick(barStart));
             if (x >= headerWidth && x <= width())
                 measureMarks.append(qMakePair(x, bar));
+            int numerator = 4, denominator = 2;
+            _file->meterAt(barStart, &numerator, &denominator);
+            const auto grid = xiv::choosePianoRollGrid(barStart, barEnd, tpq, denominator,
+                [this](int t) { return xForMs(_file->msOfTick(t)); }, _gridMode);
+            for (int n = 1; grid.division && n < 10000; ++n) {
+                const int t = grid.boundary(n);
+                if (t >= barEnd) break;
+                const int gx = xForMs(_file->msOfTick(t));
+                if (gx >= headerWidth && gx <= width()) subBeatGridXs.append(gx);
+            }
             if (barEnd <= barStart) break;
             bar = _file->measure(barEnd, &barStart, &barEnd);
         }
@@ -1115,7 +1166,7 @@ protected:
                 menu.addSeparator();
                 QAction *splitHere = menu.addAction(tr("Split Here"));
                 splitHere->setEnabled(canSplitAt(*region, tick));
-                const int cursorTick = _file->cursorTick();
+                const int cursorTick = MidiPlayer::isPlaying() ? _file->tick(MidiPlayer::timeMs()) : _file->cursorTick();
                 QAction *splitAtCursor = menu.addAction(withShortcut(
                     tr("Split at Playhead"), QStringLiteral("xiv_split_regions")));
                 splitAtCursor->setEnabled(std::any_of(_selectedRegionIds.begin(),
@@ -1130,6 +1181,20 @@ protected:
                         this, [this, id]() { renameRegions(id, false); });
                 connect(rename->addAction(tr("Use Track Name")), &QAction::triggered,
                         this, [this, id]() { renameRegions(id, true); });
+                menu.addSeparator();
+                connect(menu.addAction(tr("Select All Notes")), &QAction::triggered, this,
+                    [this]() { if (selectRegionNotesRequested) selectRegionNotesRequested(true); });
+                connect(menu.addAction(tr("Deselect All Notes")), &QAction::triggered, this,
+                    [this]() { if (selectRegionNotesRequested) selectRegionNotesRequested(false); });
+                if (selectedTrackIsGuitar()) {
+                    auto *sound = menu.addMenu(tr("Guitar Sound"));
+                    for (int i = 0; i < 5; ++i)
+                        connect(sound->addAction(tr(xiv::guitarNames[i])), &QAction::triggered, this,
+                            [this, i]() { setRegionProgram(xiv::guitarPrograms[i]); });
+                    sound->addSeparator();
+                    connect(sound->addAction(tr("Reset to Track Sound")), &QAction::triggered, this,
+                        [this]() { setRegionProgram(-1); });
+                }
                 addRegionNoteActions(menu, id);
                 menu.addSeparator();
                 QAction *deleteRegionAction = menu.addAction(withShortcut(
@@ -1222,7 +1287,9 @@ protected:
         update();
         QToolTip::hideText();
         const int headerY = pos.y() - _rulerTop;
-        if (inPlayheadRuler(pos) && !MidiInput::recording()) {
+        const int lineX = xForMs(_playheadMs >= 0 ? _playheadMs : _file->msOfTick(_file->cursorTick()));
+        const bool onPlayhead = pos.x() >= headerWidth && pos.y() >= _rulerTop && std::abs(pos.x() - lineX) <= 4;
+        if ((inPlayheadRuler(pos) || onPlayhead) && !MidiInput::recording() && e->modifiers() == Qt::NoModifier) {
             setFocus(Qt::MouseFocusReason);
             const int handleX = xForMs(_playheadMs >= 0 ? _playheadMs : _file->msOfTick(_file->cursorTick()));
             const bool grabbedHandle = handleX >= headerWidth && handleX < width() &&
@@ -1356,7 +1423,7 @@ protected:
                     if (next != regions.crend()) r = &*next;
                 }
                 const bool wasSelected = r->id == _selectedRegionId || _selectedRegionIds.count(r->id);
-                const bool canDrag = !MidiPlayer::isPlaying() && !MidiInput::recording();
+                const bool canDrag = !MidiInput::recording();
                 const int left = xForMs(_file->msOfTick(r->startTick));
                 const int right = xForMs(_file->msOfTick(r->endTick()));
                 const bool leftHandle = left >= headerWidth && std::abs(pos.x() - left) <= 8;
@@ -1575,7 +1642,7 @@ protected:
             const int from = _headerDragRow;
             _headerDragRow = -1;
             const int to = (int(e->position().y()) - rulerHeight()) / laneHeight;
-            if (_file && canEditQuantize() && to >= 0 && to < _file->numTracks() && from != to &&
+            if (_file && !MidiPlayer::isPlaying() && canEditQuantize() && to >= 0 && to < _file->numTracks() && from != to &&
                 (e->position().toPoint() - _headerDragStart).manhattanLength() >= 8) {
                 const auto oldTracks = *_file->tracks();
                 _trackLayoutEditing = true;
@@ -2017,6 +2084,7 @@ private:
         createNamedSection({QString(), start, end});
     }
     void editMeter(int tick) {
+        if (MidiPlayer::isPlaying()) return;
         if (!_file->numTracks()) return;
         int start = 0, end = 0;
         const int bar = _file->measure(tick, &start, &end);
@@ -2128,6 +2196,7 @@ private:
         return hit;
     }
     void deleteSelectedTempoPoint() {
+        if (MidiPlayer::isPlaying()) return;
         if (!canEditQuantize() || _tempoSelected <= 0) return;
         auto points = xiv::readTempoMap(_file);
         auto point = points.find(_tempoSelected);
@@ -2138,6 +2207,7 @@ private:
         xiv::writeTempoMap(_file, points, tr("Delete Tempo Point"));
     }
     void addTempoPoint(int tick) {
+        if (MidiPlayer::isPlaying()) return;
         auto points = xiv::readTempoMap(_file);
         if (!points.contains(tick)) {
             xiv::insertTempoPoint(points, tick);
@@ -2147,6 +2217,7 @@ private:
         update();
     }
     void beginTempoDrag(const QPoint &pos) {
+        if (MidiPlayer::isPlaying()) return;
         const auto points = xiv::readTempoMap(_file);
         const auto [kind, tick] = tempoHit(points, pos);
         if (kind == TempoDrag::None) {
@@ -2210,6 +2281,7 @@ private:
         update();
     }
     void finishTempoDrag(const QPoint &pos) {
+        if (MidiPlayer::isPlaying()) return;
         updateTempoDraft(pos);
         const auto gesture = _tempoDrag;
         _tempoDrag = TempoDrag::None;
@@ -2220,6 +2292,7 @@ private:
         update();
     }
     void editTempoHit(const QPoint &pos) {
+        if (MidiPlayer::isPlaying()) return;
         auto points = xiv::readTempoMap(_file);
         const auto [kind, tick] = tempoHit(points, pos);
         if (kind == TempoDrag::None) return;
@@ -2490,11 +2563,15 @@ private:
         if (tutorialTick != tick || (_tutorialSnapTick >= 0 && tick == _tutorialSnapTick))
             return tutorialTick;
         if (!_snapToGrid || !_file) return std::max(0, tick);
-        const int beatTicks = std::max(1, _file->ticksPerQuarter());
-        const int64_t aligned = (static_cast<int64_t>(std::max(0, tick)) +
-                                 beatTicks / 2) / beatTicks * beatTicks;
-        return static_cast<int>(std::min<int64_t>(aligned,
-                                                  std::numeric_limits<int>::max()));
+        int start = 0, end = 0, numerator = 4, denominator = 2;
+        _file->measure(tick, &start, &end);
+        const auto next = _file->timeSignatureEvents()->upperBound(tick);
+        if (next != _file->timeSignatureEvents()->cend()) end = std::min(end, next.key());
+        _file->meterAt(start, &numerator, &denominator);
+        const auto grid = xiv::choosePianoRollGrid(start, end, _file->ticksPerQuarter(), denominator,
+            [this](int t) { return xForMs(_file->msOfTick(t)); }, _gridMode);
+        const auto [left, right] = grid.cellAt(tick);
+        return tick - left <= right - tick ? left : right;
     }
     bool matchesCommand(const QKeyEvent *event, const QString &id) const {
         return commandShortcuts && commandShortcuts(id).contains(QKeySequence(event->keyCombination()));
@@ -2536,7 +2613,7 @@ private:
     void splitSelectedAtPlayhead() {
         if (!_file || !_selectedRegionId) return;
         splitRegions(_selectedRegionIds.empty() ? std::set<int>{_selectedRegionId} :
-                     _selectedRegionIds, _file->cursorTick());
+                     _selectedRegionIds, MidiPlayer::isPlaying() ? _file->tick(MidiPlayer::timeMs()) : _file->cursorTick());
     }
 
     void splitRegion(int id, int tick) {
@@ -2544,7 +2621,7 @@ private:
     }
 
     void splitRegions(const std::set<int> &ids, int tick) {
-        if (!_file || MidiPlayer::isPlaying() || MidiInput::recording()) return;
+        if (!_file || MidiInput::recording()) return;
         const QPointer<MidiFile> document = _file;
         auto updated = _regions;
         std::vector<int> targets;
@@ -2598,7 +2675,7 @@ private:
             if (dialog.exec() != QDialog::Accepted) return;
             if (split->isChecked()) choice = xiv::CrossingNoteMode::Split;
         }
-        if (!document || _file.data() != document.data() || MidiPlayer::isPlaying() || MidiInput::recording()) return;
+        if (!document || _file.data() != document.data() || MidiInput::recording()) return;
         std::set<int> rightHalves;
         int primary = 0;
         for (int id : targets) {
@@ -2732,7 +2809,8 @@ private:
             if (it == _preview.constEnd()) continue;
             for (const auto &note : it.value())
                 source.push_back({id++, track, note.beginTick, note.endTick,
-                                  note.pitch, note.velocity, note.channel});
+                                  note.pitch, note.velocity, note.channel,
+                                  xiv::guitarProgramOrDefault(_file->track(track)->progAtTick(note.beginTick))});
         }
         return source;
     }
@@ -2887,6 +2965,7 @@ private:
     }
 
     void distributeRegionNotes(int id, bool byChannel) {
+        if (MidiPlayer::isPlaying()) return;
         if (!canEditQuantize()) return;
         auto updated = _regions;
         if (!captureRegion(updated, id)) return;
@@ -2958,7 +3037,9 @@ private:
         _regionTrackEditPendingSave = true;
         _selectedRegionId = keepSource ? id : firstNewRegion;
         _selectedRegionIds = {_selectedRegionId};
-        _file->setRegionLayout(_regions);
+        const auto publish = [this]() { _file->setRegionLayout(_regions); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
+        else publish();
         protocol->enterUndoStep(new ProtocolItem(before, &_regionHistory));
         protocol->endAction();
 
@@ -2981,7 +3062,7 @@ private:
         auto snapshot = _regions;
         if (!captureRegion(snapshot, id)) return;
         const auto *region = snapshot.find(id);
-        _regionClipboard = {region->duration(), *region->ownedNotes, region->name};
+        _regionClipboard = {region->duration(), *region->ownedNotes, region->name, region->program};
         _lastCopiedRegionId = id;
     }
 
@@ -3070,8 +3151,9 @@ private:
     void transferRegions(const std::set<int> &ids, int primary, int track, int start,
                          const QString &description) {
         MidiTrack *destination = _file->tracks()->at(track);
+        auto proposed = _regions;
         ProtocolEntry *before = _regionHistory.copy();
-        if (!xiv::consolidateRegions(_regions, ids, primary, track, start,
+        if (!xiv::consolidateRegions(proposed, ids, primary, track, start,
                                      destination->assignedChannel(), _file->tracks()->size(),
                                      sourceNotesFor(ids))) {
             delete before;
@@ -3079,6 +3161,45 @@ private:
                 tr("The destination needs a valid timeline position and a MIDI channel for notes moved from other tracks."), this);
             return;
         }
+        if (!xiv::isGuitarProgram(destination->progAtTick(0))) {
+            proposed.setProgram(primary, -1);
+        }
+        if (ids.size() > 1) {
+            auto notes = *proposed.find(primary)->ownedNotes;
+            const int defaultProgram = xiv::guitarProgramOrDefault(destination->progAtTick(0));
+            for (auto &note : notes) if (note.program < 0) note.program = defaultProgram;
+            proposed.replaceOwnedNotes(primary, notes);
+            const auto conflicts = xiv::conflictingGuitarNotes(notes);
+            if (!conflicts.empty()) {
+                std::vector<xiv::RenderedRegionNote> highlighted;
+                int joinedId = 0;
+                for (const auto &note : xiv::renderRegionNotes(sourceNotesFor(ids), _regions)) {
+                    if (!ids.count(note.regionId)) continue;
+                    if (conflicts.count(++joinedId))
+                        highlighted.push_back(note);
+                }
+                if (highlightGuitarConflicts) highlightGuitarConflicts(highlighted);
+                QMessageBox dialog(QMessageBox::Question, tr("Overlapping Guitar Sounds"),
+                    tr("The highlighted notes use different guitar sounds on the same channel. Choose which voice to keep, or shorten overlapping notes."),
+                    QMessageBox::Cancel, this);
+                auto *highest = dialog.addButton(tr("Keep Higher Voice"), QMessageBox::AcceptRole);
+                auto *lowest = dialog.addButton(tr("Keep Lower Voice"), QMessageBox::AcceptRole);
+                auto *shorten = dialog.addButton(tr("Remove Overlaps"), QMessageBox::AcceptRole);
+                auto shortened = notes;
+                const bool canShorten = xiv::resolveGuitarConflicts(shortened, xiv::GuitarConflictChoice::Shorten);
+                shorten->setEnabled(canShorten);
+                if (!canShorten) dialog.setInformativeText(tr("Some conflicting notes start together. Choose a higher or lower voice to resolve those notes."));
+                dialog.exec();
+                if (dialog.clickedButton() == highest)
+                    xiv::resolveGuitarConflicts(notes, xiv::GuitarConflictChoice::Highest);
+                else if (dialog.clickedButton() == lowest)
+                    xiv::resolveGuitarConflicts(notes, xiv::GuitarConflictChoice::Lowest);
+                else if (dialog.clickedButton() == shorten && canShorten) notes = std::move(shortened);
+                else { delete before; return; }
+                proposed.replaceOwnedNotes(primary, std::move(notes));
+            }
+        }
+        _regions = std::move(proposed);
         _selectedRegionId = primary;
         _selectedRegionIds = {primary};
         setSelectedTrack(destination);
@@ -3087,7 +3208,7 @@ private:
     }
 
     void joinSelectedRegions(int primary) {
-        if (!_file || MidiPlayer::isPlaying() || MidiInput::recording() ||
+        if (!_file || MidiInput::recording() ||
             _selectedRegionIds.size() < 2) return;
         const auto *destination = _regions.find(primary);
         if (!destination) return;
@@ -3101,7 +3222,7 @@ private:
     }
 
     void moveRegion(int id, int newStartTick, int destination) {
-        if (!_file || MidiPlayer::isPlaying() || MidiInput::recording()) return;
+        if (!_file || MidiInput::recording()) return;
         const auto *region = _regions.find(id);
         if (!region || !canPlaceMove(*region, newStartTick, destination)) return;
         if (destination != region->trackIndex) {
@@ -3118,7 +3239,9 @@ private:
     // projected during playback/export; neither trim nor duplication edits
     // source MIDI note-on/off pairs.
     void finishRegionEdit(ProtocolEntry *before, const QString &description) {
-        _file->setRegionLayout(_regions);
+        const auto publish = [this]() { _file->setRegionLayout(_regions); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
+        else publish();
         _file->protocol()->startNewAction(description);
         _file->protocol()->enterUndoStep(new ProtocolItem(before, &_regionHistory));
         _file->protocol()->endAction();
@@ -3130,7 +3253,7 @@ private:
         if (regionViewChanged) regionViewChanged();
     }
     void duplicateRegion(int id, int newStartTick) {
-        if (!_file || MidiPlayer::isPlaying() || !_regions.canDuplicate(id, newStartTick)) return;
+        if (!_file || !_regions.canDuplicate(id, newStartTick)) return;
         ProtocolEntry *before = _regionHistory.copy();
         const int newId = _regions.duplicate(id, newStartTick);
         if (!newId) { delete before; return; }
@@ -3139,7 +3262,7 @@ private:
         finishRegionEdit(before, tr("Duplicate Region"));
     }
     void trimRegionLeft(int id, int newStartTick) {
-        if (!_file || MidiPlayer::isPlaying()) return;
+        if (!_file) return;
         const auto *r = _regions.find(id);
         if (!r || r->startTick == newStartTick ||
             !_regions.canTrimLeft(id, newStartTick)) return;
@@ -3148,7 +3271,7 @@ private:
         finishRegionEdit(before, tr("Trim Region Start"));
     }
     void trimRegionRight(int id, int newEndTick) {
-        if (!_file || MidiPlayer::isPlaying()) return;
+        if (!_file) return;
         const auto *r = _regions.find(id);
         const int sourceEnd = r ? sourceEndTick(r->trackIndex) : 0;
         if (!r || r->endTick() == newEndTick ||
@@ -3159,13 +3282,14 @@ private:
     }
 
     void loopRegion(int id, int newEndTick) {
-        if (!_file || MidiPlayer::isPlaying() ||
+        if (!_file ||
             !_regions.canLoop(id, newEndTick)) return;
         ProtocolEntry *before = _regionHistory.copy();
         if (!_regions.loopTo(id, newEndTick)) { delete before; return; }
         finishRegionEdit(before, tr("Loop Region"));
     }
     void deleteEmptySelectedTrack() {
+        if (MidiPlayer::isPlaying()) return;
         const int index = _file->tracks()->indexOf(_selected);
         for (const auto &region : _regions.regions())
             if (region.trackIndex == index) return;
@@ -3198,7 +3322,7 @@ private:
         const int version = root.value(QStringLiteral("version")).toInt();
         if (root.value(QStringLiteral("format")).toString() !=
                 QStringLiteral("XIV Midi Studio regions") ||
-            (version != 1 && version != 2) ||
+            (version != 1 && version != 2 && version != 3) ||
             root.value(QStringLiteral("tracks")).toInt(-1) != _file->tracks()->size()) return;
         const QJsonValue jsonRegions = root.value(QStringLiteral("regions"));
         if (!jsonRegions.isArray()) return;
@@ -3231,19 +3355,21 @@ private:
                                 {o.value(QStringLiteral("quantizeGridTicks")).toInt(0),
                                  o.value(QStringLiteral("quantizeStrength")).toInt(100),
                                  o.value(QStringLiteral("quantizeSwing")).toInt(50)}});
+            incoming.back().program = o.value(QStringLiteral("program")).toInt(-1);
             incoming.back().name = o.value(QStringLiteral("name")).toString().toStdString();
             const auto storedNotes = o.value(QStringLiteral("ownedNotes"));
             if (storedNotes.isUndefined()) continue;
-            if (version != 2 || !storedNotes.isArray()) return;
+            if ((version != 2 && version != 3) || !storedNotes.isArray()) return;
             std::vector<xiv::OwnedRegionNote> notes;
             const QJsonArray rows = storedNotes.toArray();
             notes.reserve(static_cast<std::size_t>(rows.size()));
             for (const auto &row : rows) {
                 const QJsonArray values = row.toArray();
-                if (values.size() != 6) return;
+                if (values.size() != 6 && values.size() != 7) return;
                 notes.push_back({values.at(0).toInt(-1), values.at(1).toInt(-1),
                                  values.at(2).toInt(-1), values.at(3).toInt(-1),
-                                 values.at(4).toInt(-1), values.at(5).toInt(-1)});
+                                 values.at(4).toInt(-1), values.at(5).toInt(-1),
+                                 values.size() == 7 ? values.at(6).toInt(-1) : -1});
             }
             incoming.back().ownedNotes =
                 std::make_shared<const std::vector<xiv::OwnedRegionNote>>(std::move(notes));

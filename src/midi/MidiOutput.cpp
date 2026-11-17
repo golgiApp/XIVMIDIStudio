@@ -40,6 +40,7 @@ using namespace rt::midi;
 
 RtMidiOut *MidiOutput::_midiOut = 0;
 QString MidiOutput::_outPort = "";
+static double masterPlaybackVolume = 1.0;
 QMap<int, QList<int> > MidiOutput::playedNotes = QMap<int, QList<int> >();
 bool MidiOutput::isAlternativePlayer = false;
 
@@ -123,6 +124,7 @@ bool MidiOutput::setOutputPort(QString name) {
             }
         }
         _outPort = name;
+        setMasterVolume(masterPlaybackVolume);
 
         // Persist immediately
         QScopedPointer<QSettings> settings(Appearance::settings());
@@ -162,6 +164,7 @@ bool MidiOutput::setOutputPort(QString name) {
                 _midiOut->closePort();
                 _midiOut->openPort(i);
                 _outPort = name;
+        setMasterVolume(masterPlaybackVolume);
 
                 // Persist immediately
                 QScopedPointer<QSettings> settings(Appearance::settings());
@@ -203,6 +206,21 @@ void MidiOutput::sendEnqueuedCommand(QByteArray array) {
         } catch (RtMidiError &error) {
             error.printMessage();
         }
+    }
+}
+
+void MidiOutput::setMasterVolume(double volume) {
+    masterPlaybackVolume = qBound(0.0, volume, 1.0);
+    volume = masterPlaybackVolume;
+#ifdef FLUIDSYNTH_SUPPORT
+    FluidSynthEngine::instance()->setPlaybackVolume(volume);
+#endif
+    if (!isFluidSynthOutput() && isConnected()) {
+        const int value = qBound(0, qRound(volume * 16383.0), 16383);
+        QByteArray message;
+        for (int byte : {0xF0, 0x7F, 0x7F, 0x04, 0x01, value & 127, (value >> 7) & 127, 0xF7})
+            message.append(char(byte));
+        sendCommand(message);
     }
 }
 

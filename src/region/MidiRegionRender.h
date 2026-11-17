@@ -25,6 +25,7 @@ struct SourceRegionNote {
     int pitch = 60;
     int velocity = 100;
     int channel = 0;
+    int program = -1;
 };
 struct RenderedRegionNote {
     int sourceId = 0;
@@ -41,6 +42,7 @@ struct RenderedRegionNote {
     int sourceSliceEndTick = 0;
     int regionId = 0;
     int ownedNoteId = 0;
+    int program = -1;
 };
 
 // Quantize relative to each instance's start. Keep the attack inside the
@@ -121,7 +123,8 @@ inline std::vector<RenderedRegionNote> renderUnloopedRegionNotes(
                           static_cast<int>(outputStart),
                           static_cast<int>(outputEnd),
                           note.pitch, note.velocity, note.channel,
-                          sourceStart, renderedEndSource, region.id, ownedId});
+                          sourceStart, renderedEndSource, region.id, ownedId,
+                          region.program >= 0 ? region.program : note.program});
     };
     for (const auto &note : source) {
         if ((trackFilter >= 0 && note.trackIndex != trackFilter) || note.startTick < 0 || note.endTick <= note.startTick ||
@@ -135,14 +138,14 @@ inline std::vector<RenderedRegionNote> renderUnloopedRegionNotes(
         if (!hasRegions && !model.isManagedTrack(note.trackIndex)) {
             result.push_back({note.id, note.trackIndex, note.startTick,
                               note.endTick, note.pitch, note.velocity, note.channel,
-                              note.startTick, note.endTick});
+                              note.startTick, note.endTick, 0, 0, note.program});
         }
     }
     for (const auto &region : model.regions()) {
         if (!region.ownedNotes || (trackFilter >= 0 && region.trackIndex != trackFilter)) continue;
         for (const auto &note : *region.ownedNotes) {
             appendNote({0, region.trackIndex, note.startTick, note.endTick,
-                        note.pitch, note.velocity, note.channel}, region, note.id);
+                        note.pitch, note.velocity, note.channel, note.program}, region, note.id);
         }
     }
     // Adjacent split fragments are deliberately NOT merged here: a note

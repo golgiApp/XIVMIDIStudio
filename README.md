@@ -1,5 +1,6 @@
 # XIV MIDI Studio
-<img width="2552" height="1360" alt="image" src="https://github.com/user-attachments/assets/fdc9fce3-c5f2-43b0-8465-e6242f6047e2" />
+
+<img width="2558" height="1325" alt="Screenshot 2026-11-14 143643" src="https://github.com/user-attachments/assets/499c9753-d22d-4bb8-a187-0eccf9ece382" />
 
 
 **Arrange like a producer with XIV MIDI Studio, a MIDI-focused digital audio workstation built for Final Fantasy XIV Bard Performance.**
@@ -14,32 +15,44 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 - Use the Piano Roll and **GM Drum Map** to select notes by pitch, remove the open hi-hat hits, and transpose the Bass Drum notes.
 - Try Global Tracks, the Piano Roll views and grid options, and playback controls.
 
+## What's new in v0.4.1
+
+- **Guitar sounds by region.** Electric guitar tracks offer Guitar Sound in the region menu and Inspector, with all five sounds in Roman numeral order and Reset to Track Sound. Sounds survive splits, copies, loops, joins, playback, and MIDI export. Piano Roll colors identify each sound.
+- **Overlapping guitar sounds.** Joining incompatible sounds on one channel highlights the affected notes and offers Keep Higher Voice, Keep Lower Voice, or Remove Overlaps. Simultaneous conflicting attacks require choosing a voice. Cancel leaves the regions unchanged, and Undo restores a completed join.
+- **Simple quantize presets.** Quarter, Eighth, Sixteenth, Eighth Triplet, Sixteenth Triplet, Eighth Swing, and Sixteenth Swing are available for selected notes and regions. Both swing presets use 66%. The Inspector's Apply to Entire Project includes hidden and muted tracks in one undoable change.
+- **Live arrangement editing.** Select, move, resize, loop, split, and transpose regions while playing. Clicking either ruler seeks without stopping playback, and the visible playhead line can be dragged.
+- **Consistent grid controls.** Auto, Quarter, Eighth, and Sixteenth control both editors. Snap follows each editor's visible subdivisions. Clicking to create a note uses a visible subdivision capped at a quarter note; dragging can create longer notes.
+- **Track channel routing.** The Inspector's MIDI channel selector moves existing notes with the track. Choosing an occupied channel asks before sharing. Changing an instrument on a shared channel first assigns an unused melodic channel, or explains when none is available.
+- **Playback volume.** A speaker button opens a master volume slider and mute checkbox. These preferences are remembered and never change exported MIDI velocities, controllers, or dynamics. The built-in synthesizer applies the volume directly; external MIDI devices must support Universal Master Volume.
+- **Selection and menu cleanup.** Region menus include Select All Notes and Deselect All Notes. Selected-note tools are ordered Transpose, Remove Overlaps, Force Legato, Chord Voice Filter, and Quantize.
+- **Small interface improvements.** Don't Show Again is a startup checkbox with a reminder to re-enable the menu under View. Zoom sliders have vertical and horizontal arrow labels, Snap is compact, Piano, Plucked Strings is renamed, and Percussion appears last.
+
 ## What's new in v0.4.0
 
-This release brings together the tester-feedback improvements, including fixes first shipped in v0.3.6.3 and v0.3.6.4.
+This release brings together the tester-feedback improvements to instruments, editing, and workflow.
 
 ### Tracks and instruments
 
 - **Instrument families.** FFXIV Standard presets are grouped into Woodwinds, Brass, Percussion, Orchestral Strings, Piano & Plucked Strings, and Electric Guitars.
 - **Revised instrument icons.** Updated instrument silhouettes include alto saxophone, French horn, trombone, harp, cymbal, oboe, clarinet, and electric guitars. Guitar badges and menu order follow I Overdriven, II Clean, III Muted, IV Power Chords, and V Special.
 - **Track reordering.** Drag the track-header name area to move a track and its regions. Reordering supports Undo and preserves the track order used by MIDI saving and export.
-- **Fix XIV Channels.** Edited melodic regions keep their tracks' assigned channels after a rebuild. First shipped in v0.3.6.3.
+- **Fix XIV Channels.** Edited melodic regions keep their tracks' assigned channels after a rebuild.
 
 ### Editing and playback
 
 - **Shift+click selection.** Add or remove Piano Roll notes using Shift+click. Ctrl+click is also supported.
 - **Live note editing.** Select notes and use the right-click transpose commands during playback. The playback schedule refreshes at the current position and releases sounding notes to prevent stuck pitches.
-- **Persistent selection and note audition.** Moving, resizing, transposing, quantizing, and length adjustments retain note selection. Voice filters retain surviving selected notes. Clicking a note auditions its track instrument while stopped. These fixes first shipped across v0.3.6.3 and v0.3.6.4.
-- **Delete and Backspace.** Both delete the focused editor's selection. First shipped in v0.3.6.4.
-- **Shared playhead controls.** Click or drag either ruler. Snap places the playhead at the nearest measure start. First shipped in v0.3.6.4.
-- **Paste at the playhead.** Paste into the active, unlooped destination region, preserving the phrase's internal spacing. The phrase must fit inside that region. First shipped in v0.3.6.4.
+- **Persistent selection and note audition.** Moving, resizing, transposing, quantizing, and length adjustments retain note selection. Voice filters retain surviving selected notes. Clicking a note auditions its track instrument while stopped.
+- **Delete and Backspace.** Both delete the focused editor's selection.
+- **Shared playhead controls.** Click or drag either ruler. Snap places the playhead at the nearest measure start.
+- **Paste at the playhead.** Paste into the active, unlooped destination region, preserving the phrase's internal spacing. The phrase must fit inside that region.
 - **Clear Cycle Range.** Right-click the cycle strip to clear its range and turn Cycle off.
 
 ### Interface and preferences
 
 - **Optional startup chooser.** Choose Don't Show Again to start a new project now and on subsequent direct launches. Restore the chooser using View → Show Startup Menu on Launch. Opening a MIDI file directly opens that file.
 - **Settings under File.** Settings has one menu entry.
-- **Persistent preferences.** Appearance and Customize Toolbar preferences survive restarting. First shipped in v0.3.6.3.
+- **Persistent preferences.** Appearance and Customize Toolbar preferences survive restarting.
 - **Zoom sliders.** Arrangement and Piano Roll have independent horizontal and vertical controls. Fit Tracks automatically adjusts Arrangement row height to the available space, subject to readable track-control sizes.
 - **Global Tracks label.** The header reserves its available width for the label.
 - **Tutorial guidance.** The grid lesson explains Shift+scroll vertical zoom. The empty Piano Roll explains selecting a region or creating one with Shift+click.

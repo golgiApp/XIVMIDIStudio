@@ -83,6 +83,9 @@
 #include "TrimStartDialog.h"
 #include "InstrumentChooser.h"
 #include "../midi/InstrumentDefinitions.h"
+#include "../region/QuantizePresets.h"
+#include <QCheckBox>
+#include <QWidgetAction>
 #include "../support/SoundFontPresetCatalog.h"
 #include "LayoutSettingsWidget.h"
 #include "SplitChannelsDialog.h"
@@ -183,6 +186,8 @@ static QStringList enabledSoundFontPaths() {
     if (paths.isEmpty() && QFileInfo::exists(bundled)) paths.append(bundled);
     return paths;
 }
+
+static bool channelUsedByAnotherTrack(MidiFile *file, MidiTrack *track, int channel);
 
 static void assignTrackProgram(MidiFile *file, MidiTrack *track, int channel, int program) {
     const auto events = file->channelEvents(channel)->values(0);
@@ -417,6 +422,7 @@ MainWindow::MainWindow(QString initFile)
         slider->setValue(vertical ? 100 : 50);
         slider->setMaximumWidth(100);
         slider->setToolTip(vertical ? tr("Piano Roll vertical zoom") : tr("Piano Roll horizontal zoom"));
+        gridLayout->addWidget(new QLabel(vertical ? QStringLiteral("↕") : QStringLiteral("↔"), pianoHeader));
         gridLayout->addWidget(slider);
         connect(slider, &QSlider::valueChanged, mw_matrixWidget,
                 vertical ? &MatrixWidget::setVerticalZoom : &MatrixWidget::setHorizontalZoom);
@@ -440,6 +446,7 @@ MainWindow::MainWindow(QString initFile)
     addGridButton(GridMode::Sixteenth, tr("1/16"), tr("Show a fixed sixteenth-note grid"));
     connect(gridButtons, &QButtonGroup::idClicked, this, [this](int id) {
         mw_matrixWidget->setPianoRollGridMode(static_cast<GridMode>(id));
+        if (_arrangementWidget) _arrangementWidget->setGridMode(static_cast<GridMode>(id));
         _matrixWidgetContainer->update();
     });
 
@@ -692,30 +699,11 @@ MainWindow::MainWindow(QString initFile)
     auto *grid = new QComboBox(regionGroup);
     grid->setToolTip(tr("Correct the selected region's note timing without changing source MIDI."));
     regionForm->addRow(tr("Quantize"), grid);
-    auto *advanced = new QToolButton(regionGroup);
-    advanced->setText(tr("More"));
-    advanced->setCheckable(true);
-    advanced->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    advanced->setArrowType(Qt::RightArrow);
-    regionForm->addRow(advanced);
-    auto *advancedFields = new QWidget(regionGroup);
-    auto *advancedForm = new QFormLayout(advancedFields);
-    advancedForm->setContentsMargins(0, 0, 0, 0);
-    auto *strength = new QSpinBox(advancedFields);
-    strength->setRange(0, 100);
-    strength->setSuffix(QStringLiteral("%"));
-    strength->setKeyboardTracking(false);
-    advancedForm->addRow(tr("Strength"), strength);
-    auto *swing = new QSpinBox(advancedFields);
-    swing->setRange(50, 75);
-    swing->setSuffix(QStringLiteral("%"));
-    swing->setKeyboardTracking(false);
-    advancedForm->addRow(tr("Swing"), swing);
-    advancedFields->hide();
-    regionForm->addRow(advancedFields);
-    connect(advanced, &QToolButton::toggled, advancedFields, &QWidget::setVisible);
-    connect(advanced, &QToolButton::toggled, advanced, [advanced](bool open) {
-        advanced->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+    auto *guitarSound = new QToolButton(regionGroup);
+    guitarSound->setText(tr("Guitar Sound…"));
+    regionForm->addRow(guitarSound);
+    connect(guitarSound, &QToolButton::clicked, this, [this, guitarSound]() {
+        _arrangementWidget->showRegionGuitarMenu(guitarSound->mapToGlobal(QPoint(0, guitarSound->height())));
     });
     inspectorLayout->addWidget(regionGroup);
 
@@ -724,7 +712,14 @@ MainWindow::MainWindow(QString initFile)
     auto *trackName = new QLabel(tr("Select a track"), trackGroup);
     trackName->setWordWrap(true);
     trackForm->addRow(trackName);
-    auto *assignedChannel = new QLabel(trackGroup);
+    auto *assignedChannel = new QComboBox(trackGroup);
+    for (int ch = 0; ch < 16; ++ch) assignedChannel->addItem(QString::number(ch + 1), ch);
+    connect(assignedChannel, &QComboBox::activated, this, [this, assignedChannel](int index) {
+        if (auto *track = _arrangementWidget->selectedTrack()) moveTrackEventsToChannel(track, index);
+        const QSignalBlocker block(assignedChannel);
+        auto *track = _arrangementWidget->selectedTrack();
+        assignedChannel->setCurrentIndex(track ? track->assignedChannel() : -1);
+    });
     trackForm->addRow(tr("MIDI channel"), assignedChannel);
     auto *instrument = new QToolButton(trackGroup);
     instrument->setText(tr("SoundFont Patch…"));
@@ -738,7 +733,7 @@ MainWindow::MainWindow(QString initFile)
     auto *projectGroup = new QGroupBox(tr("Project"), inspector);
     auto *projectForm = new QFormLayout(projectGroup);
     auto *quantizeProjectRegions = new QToolButton(projectGroup);
-    quantizeProjectRegions->setText(tr("Quantize Project Regions..."));
+    quantizeProjectRegions->setText(tr("Apply to Entire Project"));
     quantizeProjectRegions->setToolTip(
         tr("Apply the selected region's grid, strength, and swing to every region in the project."));
     projectForm->addRow(quantizeProjectRegions);
@@ -809,15 +804,6 @@ MainWindow::MainWindow(QString initFile)
                 tr("Assign this track a MIDI channel before changing its instrument."));
             return;
         }
-        // MIDI programs belong to channels; warn if this channel is shared.
-        for (MidiTrack *other : *file->tracks()) {
-            if (other != track && other->assignedChannel() == activeChannel) {
-                menu.addAction(tr("Shared channel: changing this instrument also changes %1")
-                    .arg(other->name()))->setEnabled(false);
-                menu.addSeparator();
-                break;
-            }
-        }
         QSet<int> seenPrograms;
         const int currentProgram = file->channel(activeChannel)->progAtTick(file->cursorTick());
         const auto addPreset = [this, &seenPrograms, track, activeChannel, currentProgram](
@@ -828,12 +814,44 @@ MainWindow::MainWindow(QString initFile)
             action->setCheckable(true);
             action->setChecked(program == currentProgram);
             QObject::connect(action, &QAction::triggered, this,
-                [this, track, activeChannel, name, program]() {
+                [this, track, activeChannel, name, program]() mutable {
                     if (!file || !file->tracks()->contains(track)) return;
+                    activeChannel = track->assignedChannel();
+                    int destination = activeChannel;
+                    if (channelUsedByAnotherTrack(file, track, destination)) {
+                        std::array<bool, 16> occupied{};
+                        for (int ch = 0; ch < 16; ++ch)
+                            occupied[ch] = channelUsedByAnotherTrack(file, track, ch) || ch == destination;
+                        destination = FFXIVClone::findUnusedMelodicChannel(occupied, destination);
+                        if (destination < 0) {
+                            QMessageBox::information(this, tr("No free MIDI channel"),
+                                tr("This track shares its channel. Free a channel before changing its instrument."));
+                            return;
+                        }
+                    }
+                    const auto change = [&]() {
                     file->protocol()->startNewAction(tr("Change Track Instrument"));
+                    if (destination != activeChannel) {
+                        _arrangementWidget->reassignRegionChannels(track->number(), destination);
+                        QList<MidiEvent *> moved;
+                        for (int ch = 0; ch < 16; ++ch)
+                            for (auto *event : file->channelEvents(ch)->values())
+                                if (event->track() == track && !dynamic_cast<OffEvent *>(event)) moved.append(event);
+                        for (auto *event : moved) {
+                            auto *on = dynamic_cast<OnEvent *>(event);
+                            if (on && !on->offEvent()) event->MidiEvent::moveToChannel(destination);
+                            else event->moveToChannel(destination);
+                        }
+                        track->assignChannel(destination);
+                        activeChannel = destination;
+                    }
                     assignTrackProgram(file, track, activeChannel, program);
+                    if (!xiv::isGuitarProgram(program)) _arrangementWidget->clearTrackGuitarPrograms(track->number());
                     track->setName(name);
                     file->protocol()->endAction();
+                    };
+                    if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(change);
+                    else change();
                     MidiOutput::sendProgram(activeChannel, program);
                     if (_arrangementWidget) _arrangementWidget->rebuildPreview();
                     if (_pianoRollTrackLabel &&
@@ -870,7 +888,24 @@ MainWindow::MainWindow(QString initFile)
             menu.addAction(tr("No enabled SoundFont presets found"))->setEnabled(false);
         menu.exec(globalPos);
     };
-    const auto refreshInspector = [this, regionName, grid, strength, swing,
+    _arrangementWidget->ensureRegionProgramChannel = [this]() {
+        auto *track = _arrangementWidget->selectedTrack();
+        if (!file || !track || track->assignedChannel() < 0) return false;
+        const int channel = track->assignedChannel();
+        if (!channelUsedByAnotherTrack(file, track, channel)) return true;
+        std::array<bool, 16> occupied{};
+        for (int ch = 0; ch < 16; ++ch)
+            occupied[ch] = channelUsedByAnotherTrack(file, track, ch) || ch == channel;
+        const int available = FFXIVClone::findUnusedMelodicChannel(occupied, channel);
+        if (available < 0) {
+            QMessageBox::information(this, tr("No free MIDI channel"),
+                tr("Free a MIDI channel before assigning a different guitar sound to this region."));
+            return false;
+        }
+        moveTrackEventsToChannel(track, available);
+        return track->assignedChannel() == available;
+    };
+    const auto refreshInspector = [this, regionName, grid, guitarSound,
                                    trackName, assignedChannel, instrument, quantizeTrackRegions,
                                    quantizeProjectRegions]() {
         MidiFile *document = _arrangementWidget->midiFile();
@@ -878,45 +913,32 @@ MainWindow::MainWindow(QString initFile)
             _arrangementWidget->selectedRegionId());
         const auto settings = region ? region->quantize : xiv::RegionQuantize{};
         const QSignalBlocker blockGrid(grid);
-        const QSignalBlocker blockStrength(strength);
-        const QSignalBlocker blockSwing(swing);
         const int tpq = document ? document->ticksPerQuarter() : 0;
-        if (grid->property("ticksPerQuarter").toInt() != tpq || grid->count() == 0) {
-            grid->setProperty("ticksPerQuarter", tpq);
-            grid->clear();
-            grid->addItem(tr("Off"), 0);
-            if (tpq > 0) {
-                for (int denominator : {4, 8, 16, 32}) {
-                    const int straight = std::max(1, (4 * tpq + denominator / 2) / denominator);
-                    const int triplet = std::max(1, (8 * tpq + 3 * denominator / 2) / (3 * denominator));
-                    if (grid->findData(straight) < 0)
-                        grid->addItem(QStringLiteral("1/%1").arg(denominator), straight);
-                    if (grid->findData(triplet) < 0)
-                        grid->addItem(tr("1/%1 Triplet").arg(denominator), triplet);
-                }
-            }
-            grid->setProperty("standardCount", grid->count());
+        if (grid->count() == 0) {
+            grid->addItem(tr("Off"), -1);
+            for (int i = 0; i < 7; ++i) grid->addItem(tr(xiv::quantizeNames[i]), i);
         }
-        const int standardCount = grid->property("standardCount").toInt();
-        if (grid->count() > standardCount) grid->removeItem(standardCount);
-        if (grid->findData(settings.gridTicks) < 0)
-            grid->addItem(tr("%1 ticks").arg(settings.gridTicks), settings.gridTicks);
-        grid->setCurrentIndex(grid->findData(settings.gridTicks));
-        strength->setValue(settings.strength);
-        swing->setValue(settings.swing);
+        int selectedPreset = 0;
+        for (int i = 0; i < 7; ++i) {
+            const auto preset = xiv::quantizePreset(i, tpq);
+            if (settings.gridTicks == preset.gridTicks && settings.swing == preset.swing)
+                selectedPreset = i + 1;
+        }
+        grid->setCurrentIndex(selectedPreset);
 
         const bool editable = _arrangementWidget->canEditQuantize();
         regionName->setText(_arrangementWidget->selectedRegionName());
         grid->setEnabled(region && editable);
-        strength->setEnabled(region && editable && settings.gridTicks > 0);
-        swing->setEnabled(region && editable && settings.gridTicks > 0);
+        guitarSound->setVisible(region && _arrangementWidget->selectedTrackIsGuitar());
+        guitarSound->setEnabled(editable);
 
         MidiTrack *track = _arrangementWidget->selectedTrack();
         const bool hasTrack = document && track && document->tracks()->contains(track);
         trackName->setText(hasTrack ? (track->name().isEmpty() ?
             tr("Track %1").arg(track->number() + 1) : track->name()) : tr("Select a track"));
-        assignedChannel->setText(hasTrack && track->assignedChannel() >= 0 ?
-            QString::number(track->assignedChannel() + 1) : tr("—"));
+        const QSignalBlocker blockChannel(assignedChannel);
+        assignedChannel->setCurrentIndex(hasTrack ? track->assignedChannel() : -1);
+        assignedChannel->setEnabled(hasTrack && editable);
         instrument->setEnabled(hasTrack && editable);
         quantizeTrackRegions->setEnabled(hasTrack && region && editable);
         quantizeProjectRegions->setEnabled(region && editable);
@@ -931,14 +953,12 @@ MainWindow::MainWindow(QString initFile)
         return _settings->value("ffxiv/chord_voice_tolerance_ticks", 0).toInt();
     };
     refreshInspector();
-    const auto applyInspectorQuantize = [this, grid, strength, swing, refreshInspector]() {
+    const auto applyInspectorQuantize = [this, grid, refreshInspector]() {
         _arrangementWidget->applyQuantize(
-            {grid->currentData().toInt(), strength->value(), swing->value()});
+            xiv::quantizePreset(grid->currentData().toInt(), file ? file->ticksPerQuarter() : 0));
         refreshInspector();
     };
     connect(grid, &QComboBox::activated, this, applyInspectorQuantize);
-    connect(strength, &QSpinBox::valueChanged, this, applyInspectorQuantize);
-    connect(swing, &QSpinBox::valueChanged, this, applyInspectorQuantize);
     connect(instrument, &QToolButton::clicked, this, [this, instrument]() {
         _arrangementWidget->instrumentMenuRequested(_arrangementWidget->selectedTrack(),
             instrument->mapToGlobal(QPoint(0, instrument->height())));
@@ -985,9 +1005,10 @@ MainWindow::MainWindow(QString initFile)
     };
     const auto seekArrangementTick = [this](int requestedTick) {
         if (!file || MidiInput::recording()) return;
-        // Playback is based on MidiFile::cursorTick() (or an older pauseTick).
-        // Stop first, then replace both so the next Play starts at this click.
-        if (MidiPlayer::isPlaying()) stop();
+        // Update the visible cursor and playback position together.
+        // Seek the running scheduler without stopping transport.
+        if (MidiPlayer::isPlaying())
+            MidiPlayer::playerThread()->seekToMs(file->msOfTick(std::max(0, requestedTick)));
         // Allow placement and paste in empty timeline space beyond the last note.
         const int tick = std::max(0, requestedTick);
         file->setPauseTick(-1);
@@ -1008,15 +1029,21 @@ MainWindow::MainWindow(QString initFile)
         if (tutorialTick != tick) {
             tick = tutorialTick;
         } else if (EventTool::magnetEnabled() && (EventTool::magnetMode() & EventTool::SNAP_GRID)) {
-            int start = 0, end = 0;
-            file->measure(tick, &start, &end);
-            if (start <= tick && tick <= end)
-                tick = tick - start <= end - tick ? start : end;
+            tick = _arrangementWidget->snapVisibleTick(tick);
         }
         if (tick != file->cursorTick() || MidiPlayer::isPlaying()) seekArrangementTick(tick);
     };
     _arrangementWidget->seekTimeRequested = seekFromRuler;
-    mw_matrixWidget->seekTimeRequested = seekFromRuler;
+    _arrangementWidget->selectRegionNotesRequested = [this](bool selected) {
+        mw_matrixWidget->selectRegionNotes(selected);
+    };
+    _arrangementWidget->highlightGuitarConflicts = [this](const std::vector<xiv::RenderedRegionNote> &notes) {
+        if (_pianoRollShowAllButton) _pianoRollShowAllButton->click();
+        mw_matrixWidget->highlightProgramConflicts(notes);
+    };
+    mw_matrixWidget->seekTimeRequested = [this, seekArrangementTick](int ms) {
+        if (file) seekArrangementTick(mw_matrixWidget->snapVisibleTick(file->tick(std::max(0, ms))));
+    };
     mw_matrixWidget->commitRegionNotes = [this](int id, std::vector<xiv::OwnedRegionNote> notes,
                                                 const QString &description) {
         const auto edit = [&]() { _arrangementWidget->replaceRegionNotes(id, std::move(notes), description); };
@@ -1308,8 +1335,8 @@ MainWindow::MainWindow(QString initFile)
     connect(_chooseEditChannel, SIGNAL(activated(int)), this, SLOT(editChannel(int)));
     _chooseEditChannel->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     _chooseEditChannel->setMinimumContentsLength(10);
-    _chooseEditChannel->setToolTip(tr("MIDI channel for new notes"));
-    trackForm->insertRow(2, tr("New notes"), _chooseEditChannel);
+    _chooseEditChannel->setToolTip(tr("Track MIDI channel"));
+    _chooseEditChannel->hide();
     // The track selector is unnecessary when clicking a left-side lane selects
     // the editing track. Keep its widget and event wiring for compatibility.
     chooserWidget->hide();
@@ -1474,8 +1501,40 @@ MainWindow::MainWindow(QString initFile)
     bar->addSpacing(6);
     auto *snapAction = _actionMap.value("magnet");
     snapAction->setIconText(tr("Snap"));
-    addControl(snapAction);
+    auto *snapButton = addControl(snapAction);
+    snapButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    snapButton->setFixedWidth(34);
     addControl(_actionMap.value("metronome"), true);
+    auto *master = new QToolButton(controlBar);
+    master->setToolTip(tr("Master playback volume"));
+    master->setAccessibleName(tr("Master playback volume"));
+    auto *volumeMenu = new QMenu(master);
+    auto *volumePanel = new QWidget(volumeMenu);
+    auto *volumeLayout = new QVBoxLayout(volumePanel);
+    auto *volume = new QSlider(Qt::Horizontal, volumePanel);
+    volume->setRange(0, 100);
+    volume->setValue(_settings->value("playback/master_volume", 100).toInt());
+    volume->setAccessibleName(tr("Playback volume"));
+    auto *mute = new QCheckBox(tr("Mute playback"), volumePanel);
+    mute->setChecked(_settings->value("playback/master_muted", false).toBool());
+    volumeLayout->addWidget(new QLabel(tr("Playback volume"), volumePanel));
+    volumeLayout->addWidget(volume);
+    volumeLayout->addWidget(mute);
+    auto *volumeAction = new QWidgetAction(volumeMenu);
+    volumeAction->setDefaultWidget(volumePanel);
+    volumeMenu->addAction(volumeAction);
+    master->setMenu(volumeMenu);
+    master->setPopupMode(QToolButton::InstantPopup);
+    bar->addWidget(master);
+    const auto applyVolume = [this, volume, mute, master]() {
+        _settings->setValue("playback/master_volume", volume->value());
+        _settings->setValue("playback/master_muted", mute->isChecked());
+        MidiOutput::setMasterVolume(mute->isChecked() ? 0.0 : volume->value() / 100.0);
+        master->setText(mute->isChecked() || !volume->value() ? QStringLiteral("🔇") : QStringLiteral("🔊"));
+    };
+    connect(volume, &QSlider::valueChanged, this, applyVolume);
+    connect(mute, &QCheckBox::toggled, this, applyVolume);
+    applyVolume();
     bar->addSpacing(10);
     auto *fixChannelsButton = addControl(_fixXIVChannelsTracksAction);
     fixChannelsButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -1490,6 +1549,7 @@ MainWindow::MainWindow(QString initFile)
     verticalZoom->setValue(84);
     verticalZoom->setMaximumWidth(80);
     verticalZoom->setToolTip(tr("Arrangement vertical zoom"));
+    bar->addWidget(new QLabel(QStringLiteral("↕"), controlBar));
     bar->addWidget(verticalZoom);
     connect(verticalZoom, &QSlider::valueChanged, this, [this, autoZoom](int value) {
         autoZoom->setChecked(false);
@@ -1508,6 +1568,7 @@ MainWindow::MainWindow(QString initFile)
     horizontalZoom->setValue(50);
     horizontalZoom->setMaximumWidth(80);
     horizontalZoom->setToolTip(tr("Arrangement horizontal zoom"));
+    bar->addWidget(new QLabel(QStringLiteral("↔"), controlBar));
     bar->addWidget(horizontalZoom);
     connect(horizontalZoom, &QSlider::valueChanged, _arrangementWidget, &ArrangementWidget::setTimelineZoom);
     for (bool zoomIn : {false, true}) {
@@ -1926,15 +1987,13 @@ void MainWindow::loadInitFile() {
     buttons->button(QDialogButtonBox::Ok)->setDefault(true);
     layout->addWidget(buttons);
 
-    auto *disableStartup = new QPushButton(tr("Don't Show Again"), &startup);
+    auto *disableStartup = new QCheckBox(tr("Don't Show Again"), &startup);
     layout->addWidget(disableStartup);
     auto *startupHint = new QLabel(tr("To bring this menu back, choose View → Show Startup Menu on Launch."), &startup);
     startupHint->setWordWrap(true);
     layout->addWidget(startupHint);
-    connect(disableStartup, &QPushButton::clicked, &startup, [this, &startup]() {
-        _settings->setValue("startup/show_chooser", false);
-        newFile();
-        startup.accept();
+    connect(&startup, &QDialog::accepted, this, [this, disableStartup]() {
+        _settings->setValue("startup/show_chooser", !disableStartup->isChecked());
     });
 
     // A canceled file picker or a failed open returns to the same choices.
@@ -2620,14 +2679,20 @@ void MainWindow::openFile(QString filePath) {
 }
 
 void MainWindow::redo() {
-    if (file)
-        file->protocol()->redo(true);
+    if (file) {
+        const auto edit = [this]() { file->protocol()->redo(true); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(edit);
+        else edit();
+    }
     updateTrackMenu();
 }
 
 void MainWindow::undo() {
-    if (file)
-        file->protocol()->undo(true);
+    if (file) {
+        const auto edit = [this]() { file->protocol()->undo(true); };
+        if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(edit);
+        else edit();
+    }
     updateTrackMenu();
 }
 
@@ -4900,10 +4965,14 @@ void MainWindow::clearTrackEvents(MidiTrack *track) {
 
 void MainWindow::moveTrackEventsToChannel(MidiTrack *track, int channel) {
     if (!file || !track || channel < 0 || channel >= 16 ||
-        MidiPlayer::isPlaying() || MidiInput::recording() ||
-        !file->tracks()->contains(track) || channelUsedByAnotherTrack(file, track, channel))
-        return;
+        MidiInput::recording() || !file->tracks()->contains(track)) return;
+    if (track->assignedChannel() == channel) return;
+    if (channelUsedByAnotherTrack(file, track, channel) &&
+        QMessageBox::question(this, tr("Share MIDI channel?"),
+            tr("Another track uses this channel. Tracks sharing a channel also share instrument changes. Continue?"),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) return;
 
+    const auto change = [&]() {
     QList<MidiEvent *> events;
     bool hasInitialProgram = false;
     for (int ch = 0; ch < 16; ++ch) {
@@ -4931,6 +5000,9 @@ void MainWindow::moveTrackEventsToChannel(MidiTrack *track, int channel) {
         file->channel(channel)->insertEvent(new ProgChangeEvent(channel, initialProgram, track), 0);
     track->assignChannel(channel);
     file->protocol()->endAction();
+    };
+    if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(change);
+    else change();
     if (_arrangementWidget && _arrangementWidget->regionViewChanged)
         _arrangementWidget->regionViewChanged();
     editTrackAndChannel(track);
@@ -5128,7 +5200,8 @@ void MainWindow::editChannel(int i, bool assign) {
 
     // assign channel to track
     if (assign && file && file->track(NewNoteTool::editTrack())) {
-        file->track(NewNoteTool::editTrack())->assignChannel(i);
+        moveTrackEventsToChannel(file->track(NewNoteTool::editTrack()), i);
+        return;
     }
 
     if (MatrixWidget *m = qobject_cast<MatrixWidget*>(_matrixWidgetContainer)) {

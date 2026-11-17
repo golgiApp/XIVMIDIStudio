@@ -22,12 +22,13 @@ inline bool materializeProjectedRegionIds(MidiRegionModel &model,
             const auto &note = rendered[i];
             if (note.regionId != region.id) continue;
             notes.push_back({static_cast<int>(i) + 1, note.startTick - region.startTick,
-                note.endTick - region.startTick, note.pitch, note.velocity, note.channel});
+                note.endTick - region.startTick, note.pitch, note.velocity, note.channel, note.program});
         }
         region.sourceEndTick = region.displayDuration();
         region.sourceStartTick = 0;
         region.loopLengthTicks = 0;
         region.quantize = {};
+        region.program = -1;
         region.startNoteMode = CrossingNoteMode::Split;
         region.endNoteMode = CrossingNoteMode::Keep;
         region.ownedNotes = std::make_shared<const std::vector<OwnedRegionNote>>(std::move(notes));

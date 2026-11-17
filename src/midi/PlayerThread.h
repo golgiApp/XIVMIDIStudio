@@ -100,6 +100,7 @@ public:
     int timeMs();
 
 public:
+    void seekToMs(int ms);
     void editPlayback(const std::function<void()> &edit);
 private:
     std::recursive_mutex scheduleMutex;

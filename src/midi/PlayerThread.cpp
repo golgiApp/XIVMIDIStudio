@@ -217,6 +217,12 @@ void PlayerThread::sendTrackEvent(MidiEvent *event) {
     if (audible || !track) MidiOutput::sendCommand(event);
 }
 
+void PlayerThread::seekToMs(int ms) {
+    std::lock_guard<std::recursive_mutex> lock(scheduleMutex);
+    position = std::max(0, ms);
+    scheduleChanged = true;
+}
+
 void PlayerThread::editPlayback(const std::function<void()> &edit) {
     std::lock_guard<std::recursive_mutex> lock(scheduleMutex);
     edit();
@@ -228,6 +234,15 @@ void PlayerThread::timeout() {
     if (scheduleChanged) {
         events = file->playerData();
         restorePlaybackState(position.load(), true);
+        for (auto it = events->begin(); it != events->end() && it.key() < position.load(); ++it) {
+            auto *note = dynamic_cast<NoteOnEvent *>(it.value());
+            if (note && note->offEvent() && note->velocity() > 0 &&
+                file->msOfTick(note->offEvent()->midiTime()) > position.load()) {
+                if (note->playbackProgram >= 0) MidiOutput::sendProgram(note->channel(), note->playbackProgram);
+                sendTrackEvent(note);
+            }
+        }
+        if (time) time->restart();
         scheduleChanged = false;
     }
     if (!time) {
@@ -352,7 +367,7 @@ bool PlayerThread::sendEventsBetween(int startMs, int endMs) {
                 if (n && n->track() && !n->track()->muted() &&
                     (!file->soloTrack() || file->soloTrack() == n->track()) &&
                     n->channel() >= 0 && n->channel() < 16) {
-                    int prog = n->track()->progAtTick(n->midiTime());
+                    int prog = n->playbackProgram >= 0 ? n->playbackProgram : n->track()->progAtTick(n->midiTime());
                     if (currentChannelProgram[n->channel()] != prog) {
                         MidiOutput::sendProgram(n->channel(), prog);
                         currentChannelProgram[n->channel()] = prog;

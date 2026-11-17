@@ -130,6 +130,7 @@ public:
      * \param channel The MIDI channel (0-15) to use as default
      */
     static void setStandardChannel(int channel);
+    static void setMasterVolume(double volume);
 
     /**
      * \brief Gets the standard/default MIDI channel.

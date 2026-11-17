@@ -43,7 +43,9 @@ void SingleNotePlayer::play(NoteOnEvent *event, int durationMs) {
     // Ensure the correct instrument is playing for this specific note's location
     if (event->file() && event->channel() >= 0 && event->channel() < 16) {
         int prog;
-        if (AdditionalMidiSettingsWidget::trackBasedProgramChanges() && event->track()) {
+        if (event->playbackProgram >= 0) {
+            prog = event->playbackProgram;
+        } else if (AdditionalMidiSettingsWidget::trackBasedProgramChanges() && event->track()) {
             prog = event->track()->progAtTick(event->midiTime());
         } else {
             prog = event->file()->channel(event->channel())->progAtTick(event->midiTime());

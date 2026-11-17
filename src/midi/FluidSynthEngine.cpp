@@ -88,7 +88,7 @@ bool FluidSynthEngine::initialize() {
     if (!_audioDriverName.isEmpty()) {
         fluid_settings_setstr(_settings, "audio.driver", _audioDriverName.toUtf8().constData());
     }
-    fluid_settings_setnum(_settings, "synth.gain", _gain);
+    fluid_settings_setnum(_settings, "synth.gain", _gain * _playbackVolume);
     fluid_settings_setnum(_settings, "synth.sample-rate", _sampleRate);
     fluid_settings_setint(_settings, "synth.reverb.active", _reverbEnabled ? 1 : 0);
     fluid_settings_setint(_settings, "synth.chorus.active", _chorusEnabled ? 1 : 0);
@@ -884,11 +884,17 @@ void FluidSynthEngine::setAudioDriver(const QString &driver) {
     save(); // Persist immediately
 }
 
+void FluidSynthEngine::setPlaybackVolume(double volume) {
+    QMutexLocker locker(&_engineMutex);
+    _playbackVolume = qBound(0.0, volume, 1.0);
+    if (_initialized && _synth) fluid_synth_set_gain(_synth, static_cast<float>(_gain * _playbackVolume));
+}
+
 void FluidSynthEngine::setGain(double gain) {
     QMutexLocker locker(&_engineMutex);
     _gain = gain;
     if (_initialized && _synth) {
-        fluid_synth_set_gain(_synth, static_cast<float>(gain));
+        fluid_synth_set_gain(_synth, static_cast<float>(gain * _playbackVolume));
     }
     save(); // Persist immediately
 }
