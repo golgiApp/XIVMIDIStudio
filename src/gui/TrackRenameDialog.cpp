@@ -166,6 +166,12 @@ TrackRenameDialog::TrackRenameDialog(const QString &currentName, int trackNumber
     mainLayout->addLayout(buttonLayout);
 }
 
+void TrackRenameDialog::showEvent(QShowEvent *event) {
+    QDialog::showEvent(event);
+    _nameEdit->setFocus(Qt::OtherFocusReason);
+    _nameEdit->selectAll();
+}
+
 QString TrackRenameDialog::name() const {
     return _nameEdit->text();
 }

@@ -714,12 +714,13 @@ MainWindow::MainWindow(QString initFile)
     trackName->setWordWrap(true);
     trackForm->addRow(trackName);
     auto *assignedChannel = new QComboBox(trackGroup);
+    assignedChannel->addItem(tr("Unassigned (silent)"), -1);
     for (int ch = 0; ch < 16; ++ch) assignedChannel->addItem(QString::number(ch + 1), ch);
     connect(assignedChannel, &QComboBox::activated, this, [this, assignedChannel](int index) {
-        if (auto *track = _arrangementWidget->selectedTrack()) moveTrackEventsToChannel(track, index);
+        if (auto *track = _arrangementWidget->selectedTrack()) moveTrackEventsToChannel(track, assignedChannel->itemData(index).toInt());
         const QSignalBlocker block(assignedChannel);
         auto *track = _arrangementWidget->selectedTrack();
-        assignedChannel->setCurrentIndex(track ? track->assignedChannel() : -1);
+        assignedChannel->setCurrentIndex(track ? assignedChannel->findData(track->assignedChannel()) : -1);
     });
     trackForm->addRow(tr("MIDI channel"), assignedChannel);
     auto *instrument = new QToolButton(trackGroup);
@@ -938,7 +939,7 @@ MainWindow::MainWindow(QString initFile)
         trackName->setText(hasTrack ? (track->name().isEmpty() ?
             tr("Track %1").arg(track->number() + 1) : track->name()) : tr("Select a track"));
         const QSignalBlocker blockChannel(assignedChannel);
-        assignedChannel->setCurrentIndex(hasTrack ? track->assignedChannel() : -1);
+        assignedChannel->setCurrentIndex(hasTrack ? assignedChannel->findData(track->assignedChannel()) : -1);
         assignedChannel->setEnabled(hasTrack && editable);
         instrument->setEnabled(hasTrack && editable);
         quantizeTrackRegions->setEnabled(hasTrack && region && editable);
@@ -2493,7 +2494,18 @@ void MainWindow::backMarker() {
     _matrixWidgetContainer->update();
 }
 
+static bool requireAssignedNoteTracks(MidiFile *file, QWidget *parent) {
+    const auto names = file->unassignedNoteTrackNames();
+    if (names.isEmpty()) return true;
+    QMessageBox::warning(parent, QObject::tr("Assign MIDI channels before saving"),
+        QObject::tr("These working tracks contain notes but have no MIDI channel:\n\n%1\n\n"
+                    "Assign channels in the Inspector or move their notes to assigned tracks, then save again. "
+                    "Your notes have not been removed.").arg(names.join(QStringLiteral("\n"))));
+    return false;
+}
+
 void MainWindow::save() {
+    if (file && !requireAssignedNoteTracks(file, this)) return;
     if (!file)
         return;
 
@@ -2528,6 +2540,7 @@ void MainWindow::save() {
 }
 
 void MainWindow::saveas() {
+    if (file && !requireAssignedNoteTracks(file, this)) return;
     if (!file)
         return;
 
@@ -2894,6 +2907,7 @@ bool MainWindow::saveBeforeClose() {
 
     switch (result) {
         case SaveConfirmDialog::Save:
+            if (!requireAssignedNoteTracks(file, this)) return false;
             if (QFile(file->path()).exists())
                 file->save(file->path());
             else saveas();
@@ -3743,7 +3757,8 @@ static bool channelUsedByAnotherTrack(MidiFile *file, MidiTrack *track, int chan
         if (other != track && other->assignedChannel() == channel) return true;
     const auto *events = file->channelEvents(channel);
     return std::any_of(events->cbegin(), events->cend(),
-        [track](MidiEvent *event) { return event->track() != track; });
+        [track](MidiEvent *event) { return event->track() != track &&
+            (!event->track() || event->track()->assignedChannel() >= 0); });
 }
 
 void MainWindow::addTrack() {
@@ -3773,7 +3788,7 @@ void MainWindow::addTrack() {
             if (available < 0)
                 statusBar()->showMessage(dialog.program() >= 0
                     ? tr("No melodic MIDI channel is free. Free a channel to apply this track’s instrument.")
-                    : tr("All MIDI channels are in use. Free a channel before routing this track."), 5000);
+                    : tr("Created an unassigned working track. You can edit its notes now and assign a channel later."), 5000);
         }
     }
 }
@@ -4969,15 +4984,21 @@ void MainWindow::clearTrackEvents(MidiTrack *track) {
 }
 
 void MainWindow::moveTrackEventsToChannel(MidiTrack *track, int channel) {
-    if (!file || !track || channel < 0 || channel >= 16 ||
+    if (!file || !track || channel < -1 || channel >= 16 ||
         MidiInput::recording() || !file->tracks()->contains(track)) return;
     if (track->assignedChannel() == channel) return;
-    if (channelUsedByAnotherTrack(file, track, channel) &&
+    if (channel >= 0 && channelUsedByAnotherTrack(file, track, channel) &&
         QMessageBox::question(this, tr("Share MIDI channel?"),
             tr("Another track uses this channel. Tracks sharing a channel also share instrument changes. Continue?"),
             QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) return;
 
     const auto change = [&]() {
+    if (channel == -1) {
+        file->protocol()->startNewAction(tr("Unassign Track MIDI Channel"));
+        track->assignChannel(-1);
+        file->protocol()->endAction();
+        return;
+    }
     QList<MidiEvent *> events;
     bool hasInitialProgram = false;
     for (int ch = 0; ch < 16; ++ch) {
@@ -4990,8 +5011,7 @@ void MainWindow::moveTrackEventsToChannel(MidiTrack *track, int channel) {
         }
     }
     const int oldChannel = track->assignedChannel();
-    const int initialProgram = oldChannel >= 0 && oldChannel < 16
-        ? file->channel(oldChannel)->progAtTick(0) : 0;
+    const int initialProgram = track->progAtTick(0);
 
     file->protocol()->startNewAction(tr("Change Track MIDI Channel"));
     if (_arrangementWidget)
@@ -5001,7 +5021,7 @@ void MainWindow::moveTrackEventsToChannel(MidiTrack *track, int channel) {
         if (on && !on->offEvent()) event->MidiEvent::moveToChannel(channel);
         else event->moveToChannel(channel);
     }
-    if (!hasInitialProgram && oldChannel >= 0 && oldChannel != channel)
+    if (!hasInitialProgram && oldChannel != channel)
         file->channel(channel)->insertEvent(new ProgChangeEvent(channel, initialProgram, track), 0);
     track->assignChannel(channel);
     file->protocol()->endAction();
@@ -5326,6 +5346,10 @@ void MainWindow::editTrackAndChannel(MidiTrack *track) {
         }
     }
 
+    if (track->assignedChannel() < 0) {
+        NewNoteTool::setEditChannel(0); // valid storage only; previews are suppressed
+        return;
+    }
     editChannel(focusCh, false);
 }
 
@@ -5544,7 +5568,7 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     QAction *exportArrangementAction = new QAction(tr("Export Arranged MIDI..."), this);
     exportArrangementAction->setToolTip(tr("Render MIDI region positions into a separate standard MIDI file"));
     connect(exportArrangementAction, &QAction::triggered, this, [this]() {
-        if (!file) return;
+        if (!file || !requireAssignedNoteTracks(file, this)) return;
         QString path = QFileDialog::getSaveFileName(
             this, tr("Export Arranged MIDI"),
             QFileInfo(file->path()).absolutePath() + QStringLiteral("/arranged.mid"),

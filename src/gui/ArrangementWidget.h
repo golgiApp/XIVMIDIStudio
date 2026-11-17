@@ -654,11 +654,10 @@ public:
         for (int track : _regions.managedTracks()) managed.append(track);
         root.insert(QStringLiteral("managedTracks"), managed);
         QJsonObject assignedChannels;
-        for (const auto &region : _regions.regions()) {
-            if (!region.ownedNotes) continue;
-            const int channel = _file->tracks()->at(region.trackIndex)->assignedChannel();
-            if (channel >= 0 && channel < 16)
-                assignedChannels.insert(QString::number(region.trackIndex), channel);
+        for (int index = 0; index < _file->numTracks(); ++index) {
+            const int channel = _file->tracks()->at(index)->assignedChannel();
+            if (channel >= -1 && channel < 16)
+                assignedChannels.insert(QString::number(index), channel);
         }
         if (!assignedChannels.isEmpty())
             root.insert(QStringLiteral("assignedChannels"), assignedChannels);
@@ -2794,7 +2793,7 @@ private:
         if (destination < 0 || destination >= trackCount) return false;
         if (destination == region.trackIndex) return _regions.canMove(region.id, start);
         const int channel = _file->tracks()->at(destination)->assignedChannel();
-        return channel >= 0 && channel < 16 &&
+        return channel >= -1 && channel < 16 &&
             xiv::validRegionDestination(destination, start,
                 static_cast<int64_t>(start) + region.displayDuration(), trackCount);
     }
@@ -3130,13 +3129,12 @@ private:
         if (!canEditQuantize() || trackIndex < 0 || trackIndex >= _file->numTracks()) return;
         MidiTrack *track = _file->tracks()->at(trackIndex);
         int channel = track->assignedChannel();
-        // A note-free region can also be created on an unassigned track.
-        if (clip.notes.empty() && (channel < 0 || channel >= 16)) channel = 0;
+        // Unassigned working tracks retain each note's stored channel until routed.
         auto updated = _regions;
         const int id = xiv::insertOwnedRegion(updated, trackIndex, tick,
                                                _file->numTracks(), clip, channel);
         if (!id) {
-            QToolTip::showText(QCursor::pos(), tr("Choose a track with a MIDI channel and a valid timeline position."), this);
+            QToolTip::showText(QCursor::pos(), tr("Choose a track and a valid timeline position."), this);
             return;
         }
 
@@ -3159,7 +3157,7 @@ private:
                                      sourceNotesFor(ids))) {
             delete before;
             QToolTip::showText(QCursor::pos(),
-                tr("The destination needs a valid timeline position and a MIDI channel for notes moved from other tracks."), this);
+                tr("The destination needs a valid timeline position."), this);
             return;
         }
         if (!xiv::isGuitarProgram(destination->progAtTick(0))) {
@@ -3389,6 +3387,15 @@ private:
             qWarning() << "XIV Midi Studio: invalid region sidecar ignored";
             return;
         }
+        const auto assignments = root.value(QStringLiteral("assignedChannels")).toObject();
+        for (auto it = assignments.begin(); it != assignments.end(); ++it) {
+            bool ok = false;
+            const int index = it.key().toInt(&ok);
+            const int channel = it.value().toInt(-2);
+            if (!ok || index < 0 || index >= trackCount || channel < -1 || channel > 15) return;
+        }
+        for (auto it = assignments.begin(); it != assignments.end(); ++it)
+            _file->tracks()->at(it.key().toInt())->assignChannel(it.value().toInt());
         _regions = std::move(loaded);
         for (const auto &value : root.value(QStringLiteral("sections")).toArray()) {
             const auto row = value.toArray();

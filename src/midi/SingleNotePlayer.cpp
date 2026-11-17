@@ -40,6 +40,11 @@ void SingleNotePlayer::play(NoteOnEvent *event, int durationMs) {
         timer->stop();
     }
 
+    if (!event || (event->track() && event->track()->assignedChannel() < 0)) {
+        playing = false;
+        return;
+    }
+
     // Ensure the correct instrument is playing for this specific note's location
     if (event->file() && event->channel() >= 0 && event->channel() < 16) {
         int prog;

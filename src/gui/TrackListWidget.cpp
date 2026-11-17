@@ -396,19 +396,20 @@ void TrackListWidget::showTrackContextMenu(MidiTrack *track, const QPoint &globa
     QAction *selectAllAction = menu.addAction(tr("Select All Events"));
     
     QMenu *toChannelMenu = menu.addMenu(tr("MIDI Channel"));
-    for (int channel = 0; channel < 16; ++channel) {
+    for (int channel = -1; channel < 16; ++channel) {
         bool inUse = false;
         for (auto *other : *file->tracks()) {
-            if (other != track && other->assignedChannel() == channel) {
+            if (channel >= 0 && other != track && other->assignedChannel() == channel) {
                 inUse = true;
                 break;
             }
         }
-        const auto *events = file->channelEvents(channel);
-        for (auto it = events->cbegin(); !inUse && it != events->cend(); ++it)
-            inUse = it.value()->track() != track;
+        const auto *events = channel >= 0 ? file->channelEvents(channel) : nullptr;
+        if (events) for (auto it = events->cbegin(); !inUse && it != events->cend(); ++it)
+            inUse = it.value()->track() != track &&
+                (!it.value()->track() || it.value()->track()->assignedChannel() >= 0);
 
-        QString label = tr("Channel %1").arg(channel + 1);
+        QString label = channel < 0 ? tr("Unassigned (silent)") : tr("Channel %1").arg(channel + 1);
         if (inUse) label += tr(" (in use)");
         QAction *action = toChannelMenu->addAction(label);
         action->setData(channel);

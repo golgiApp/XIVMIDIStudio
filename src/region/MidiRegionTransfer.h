@@ -30,12 +30,12 @@ inline int insertOwnedRegion(MidiRegionModel &model, int track, int start, int t
                              const RegionClipboard &clip, int channel) {
     const int64_t end = static_cast<int64_t>(start) + clip.duration;
     if (clip.duration <= 0 || !validRegionDestination(track, start, end, trackCount) ||
-        channel < 0 || channel >= 16) return 0;
+        channel < -1 || channel >= 16) return 0;
     auto notes = clip.notes;
     for (auto &note : notes) {
         if (static_cast<int64_t>(start) + note.endTick > std::numeric_limits<int>::max())
             return 0;
-        note.channel = channel;
+        if (channel >= 0) note.channel = channel;
     }
     if (!validOwnedNotes(notes)) return 0;
 
@@ -51,7 +51,7 @@ inline int insertOwnedRegion(MidiRegionModel &model, int track, int start, int t
 inline bool appendRegionNotesAtPlayhead(const MidiRegion &region, int playhead, int channel,
                                        const std::vector<OwnedRegionNote> &clipboard,
                                        std::vector<OwnedRegionNote> &destination) {
-    if (clipboard.empty() || !region.contains(playhead) || channel < 0 || channel > 15)
+    if (clipboard.empty() || !region.contains(playhead) || channel < -1 || channel > 15)
         return false;
     int first = std::numeric_limits<int>::max();
     for (const auto &note : clipboard) first = std::min(first, note.startTick);
@@ -71,7 +71,7 @@ inline bool appendRegionNotesAtPlayhead(const MidiRegion &region, int playhead, 
         note.id = static_cast<int>(nextId++);
         note.startTick = static_cast<int>(start);
         note.endTick = static_cast<int>(end);
-        note.channel = channel;
+        if (channel >= 0) note.channel = channel;
         pasted.push_back(note);
     }
     if (!validOwnedNotes(pasted)) return false;
@@ -97,7 +97,7 @@ inline bool consolidateRegions(MidiRegionModel &model, const std::set<int> &ids,
         last = std::max(last, region->endTick());
         changesTrack |= region->trackIndex != destinationTrack;
     }
-    if (changesTrack && (destinationChannel < 0 || destinationChannel > 15)) return false;
+    if (changesTrack && (destinationChannel < -1 || destinationChannel > 15)) return false;
     const int64_t end = static_cast<int64_t>(destinationStart) + (last - first);
     if (!validRegionDestination(destinationTrack, destinationStart, end, trackCount))
         return false;
@@ -109,7 +109,7 @@ inline bool consolidateRegions(MidiRegionModel &model, const std::set<int> &ids,
         if (noteEnd > std::numeric_limits<int>::max()) return false;
         notes.push_back({static_cast<int>(notes.size()) + 1, note.startTick - first,
                          note.endTick - first, note.pitch, note.velocity,
-                         note.trackIndex == destinationTrack ? note.channel : destinationChannel, note.program});
+                         note.trackIndex == destinationTrack || destinationChannel < 0 ? note.channel : destinationChannel, note.program});
     }
 
     MidiRegion result{primaryId, destinationTrack, destinationStart, 0, last - first};

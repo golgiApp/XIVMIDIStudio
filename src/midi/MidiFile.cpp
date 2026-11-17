@@ -1631,6 +1631,9 @@ void MidiFile::preparePlayerData(int tickFrom) {
         while (it != channelEvents->end()) {
             int tick = it.key();
             MidiEvent *event = it.value();
+            if (i < 16 && event->track() && event->track()->assignedChannel() < 0) {
+                ++it; continue;
+            }
             // The following tracks are rendered into a separate non-destructive
             // event schedule below. Sending source note events too would make
             // both original and moved notes audible.
@@ -1680,7 +1683,8 @@ void MidiFile::preparePlayerData(int tickFrom) {
         QMultiMap<int, MidiEvent *> rendered;
         buildRenderedNoteEvents(rendered, _renderedPlaybackEvents);
         for (auto it = rendered.cbegin(); it != rendered.cend(); ++it) {
-            if (it.key() < tickFrom || channelMuted(it.value()->channel())) continue;
+            if (it.key() < tickFrom || channelMuted(it.value()->channel()) ||
+                (it.value()->track() && it.value()->track()->assignedChannel() < 0)) continue;
             playerMap->insert(msOfTick(it.key()), it.value());
         }
     }
@@ -1707,7 +1711,35 @@ void MidiFile::setPauseTick(int tick) {
     _pauseTick = tick;
 }
 
+QStringList MidiFile::unassignedNoteTrackNames() const {
+    QSet<int> occupied;
+    for (int ch = 0; ch < 16; ++ch) {
+        for (auto *event : *channels[ch]->eventMap()) {
+            auto *note = dynamic_cast<NoteOnEvent *>(event);
+            if (!note || !note->offEvent() || !note->velocity() || !note->track()) continue;
+            const int index = _tracks->indexOf(note->track());
+            if (index >= 0 && !regionTrackHasChanged(index)) occupied.insert(index);
+        }
+    }
+    QMultiMap<int, MidiEvent *> rendered;
+    QList<MidiEvent *> owned;
+    buildRenderedNoteEvents(rendered, owned);
+    for (auto *event : rendered) {
+        if (dynamic_cast<NoteOnEvent *>(event) && event->track())
+            occupied.insert(_tracks->indexOf(event->track()));
+    }
+    qDeleteAll(owned);
+    QStringList names;
+    for (int i = 0; i < _tracks->size(); ++i) {
+        auto *track = _tracks->at(i);
+        if (occupied.contains(i) && track->assignedChannel() < 0)
+            names.append(tr("Track %1: %2").arg(i + 1).arg(track->name()));
+    }
+    return names;
+}
+
 bool MidiFile::save(QString path) {
+    if (!unassignedNoteTrackNames().isEmpty()) return false;
     if (_standaloneMidi) return saveStandaloneMidi(path);
     QFile *f = new QFile(path);
 
@@ -1837,6 +1869,7 @@ bool MidiFile::saveStandaloneMidi(const QString &path) {
 }
 
 bool MidiFile::writeArrangedMidi(const QString &path) {
+    if (!unassignedNoteTrackNames().isEmpty()) return false;
     QMultiMap<int, MidiEvent *> allEvents;
     QList<MidiEvent *> owned;
     buildRenderedNoteEvents(allEvents, owned);
@@ -1844,6 +1877,9 @@ bool MidiFile::writeArrangedMidi(const QString &path) {
         for (auto it = channels[ch]->eventMap()->cbegin();
              it != channels[ch]->eventMap()->cend(); ++it) {
             MidiEvent *event = it.value();
+            // Silent working tracks must not export leftover program/controller
+            // messages onto channels that have since been reassigned.
+            if (ch < 16 && event->track() && event->track()->assignedChannel() < 0) continue;
             bool replaced = false;
             if (ch < 16 && event->track()) {
                 const int trackIndex = _tracks->indexOf(event->track());
@@ -1921,6 +1957,7 @@ bool MidiFile::writeArrangedMidi(const QString &path) {
 }
 
 bool MidiFile::saveForExport(QString path, int startTick, int endTick) {
+    if (!unassignedNoteTrackNames().isEmpty()) return false;
     QFile *f = new QFile(path);
 
     if (!f->open(QIODevice::WriteOnly)) {

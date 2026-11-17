@@ -54,7 +54,7 @@ int main() {
     assert(xiv::renderRegionNotes(source, overlay).size() == 3);
     assert(xiv::consolidateRegions(overlay, {left, upper}, left, 1, 0, 3, 3, source));
     assert(!overlay.find(upper) && xiv::renderRegionNotes(source, overlay).size() == 3);
-    assert(!xiv::consolidateRegions(model, {left}, left, 2, 0, -1, 3, source));
+    assert(!xiv::consolidateRegions(model, {left}, left, 2, 0, -2, 3, source));
     assert(model.regions().size() == 3);
     assert(xiv::consolidateRegions(model, {left, upper}, upper, 1, 0, 3, 3, source));
     notes = xiv::renderRegionNotes(source, model);

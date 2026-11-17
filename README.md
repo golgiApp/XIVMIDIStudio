@@ -17,6 +17,11 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 
 ## What's new in v0.4.1
 
+- **Faster track naming.** Add Track and Rename Track focus the name field and select its text automatically, so you can type a number or name and press Enter.
+- **Unassigned working tracks.** Continue organizing beyond the available MIDI channels. Move, paste, join, and edit regions on unassigned tracks; they remain silent until assigned. Choose **Unassigned (silent)** in the Inspector or track channel menu to free a channel. MIDI saving requires channel assignment for every track containing notes and identifies tracks that still need it.
+- **Reliable icons.** Track icons use each track's own instrument. Drawn speaker/mute icons and vertical/horizontal zoom arrows avoid font-dependent symbols in Arrangement and Piano Roll.
+
+
 - **Guitar sounds by region.** Electric guitar tracks offer Guitar Sound in the region menu and Inspector, with all five sounds in Roman numeral order and Reset to Track Sound. Sounds survive splits, copies, loops, joins, playback, and MIDI export. Piano Roll colors identify each sound.
 - **Overlapping guitar sounds.** Joining incompatible sounds on one channel highlights the affected notes and offers Keep Higher Voice, Keep Lower Voice, or Remove Overlaps. Simultaneous conflicting attacks require choosing a voice. Cancel leaves the regions unchanged, and Undo restores a completed join.
 - **Simple quantize presets.** Quarter, Eighth, Sixteenth, Eighth Triplet, Sixteenth Triplet, Eighth Swing, and Sixteenth Swing are available for selected notes and regions. Both swing presets use 66%. The Inspector's Apply to Entire Project includes hidden and muted tracks in one undoable change.

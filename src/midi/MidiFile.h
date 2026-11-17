@@ -117,6 +117,7 @@ public:
 
     // Save As writes the audible arrangement to one standard MIDI file.
     bool saveStandaloneMidi(const QString &path);
+    QStringList unassignedNoteTrackNames() const;
     bool isStandaloneMidi() const { return _standaloneMidi; }
     bool saveArrangedMidi(QString path);
     void setRegionLayout(const xiv::MidiRegionModel &layout);

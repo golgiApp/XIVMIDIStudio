@@ -1872,8 +1872,8 @@ std::optional<xiv::MidiRegionModel> MatrixWidget::allTracksGestureDraft(
         const int trackIndex = NewNoteTool::editTrack();
         if (trackIndex < 0 || trackIndex >= file->numTracks()) return std::nullopt;
         auto *track = file->track(trackIndex);
-        const int channel = track->assignedChannel();
-        if (channel < 0 || channel > 15 || track->hidden()) return std::nullopt;
+        const int channel = std::max(0, track->assignedChannel());
+        if (channel > 15 || track->hidden()) return std::nullopt;
         const int start = noteEntryBounds(_allPressPoint, point, std::numeric_limits<int>::max()).first;
         auto updated = _regionViewModel;
         const auto *region = updated.at(trackIndex, start);
@@ -2140,7 +2140,7 @@ bool MatrixWidget::pasteNotesAtPlayhead() {
         return false;
     }
     const int channel = file->track(region->trackIndex)->assignedChannel();
-    if (channel < 0 || channel > 15) return false;
+    if (channel < -1 || channel > 15) return false;
 
     auto combined = regionNotesForEdit(*region);
     if (!xiv::appendRegionNotesAtPlayhead(*region, tick, channel, notes, combined)) {
@@ -3538,6 +3538,8 @@ void MatrixWidget::initKeyMap() {
 }
 
 void MatrixWidget::startNote(int note) {
+    if (file && NewNoteTool::editTrack() >= 0 && NewNoteTool::editTrack() < file->numTracks() &&
+        file->track(NewNoteTool::editTrack())->assignedChannel() < 0) return;
     // If note is already playing (rapid re-click), force-stop it first
     if (_activeEmulationNotes.contains(note)) {
         stopNote(note);
@@ -3634,6 +3636,8 @@ void MatrixWidget::stopAllEmulationNotes() {
 }
 
 void MatrixWidget::playNote(int note) {
+    if (file && NewNoteTool::editTrack() >= 0 && NewNoteTool::editTrack() < file->numTracks() &&
+        file->track(NewNoteTool::editTrack())->assignedChannel() < 0) return;
     int ch = MidiOutput::standardChannel();
 
     // Always re-sync the channel's program with the synthesizer before playing,

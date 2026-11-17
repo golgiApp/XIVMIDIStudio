@@ -41,6 +41,9 @@ public:
     QString name() const;
     int program() const { return _program; }
 
+protected:
+    void showEvent(QShowEvent *event) override;
+
 private slots:
     void showPresets();
     void setPresetName();
