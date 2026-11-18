@@ -11,7 +11,7 @@
 static QByteArray read(const QString &p){QFile f(p);assert(f.open(QIODevice::ReadOnly));return f.readAll();}
 int main(int argc,char**argv){
  QCoreApplication app(argc,argv);QTemporaryDir dir;assert(dir.isValid());
- const auto source=dir.filePath("original.mid"), project=dir.filePath("song.xivms"), exported=dir.filePath("export.mid");
+ const auto source=dir.filePath("original.mid"), project=dir.filePath("song.xms"), exported=dir.filePath("export.mid");
  MidiFile first;first.channel(0)->insertNote(60,0,96,100,first.track(0));
  {QFile f(source);assert(f.open(QIODevice::WriteOnly));f.write(first.serializeSourceMidi());}
  const auto original=read(source);bool ok=false;MidiFile imported(source,&ok);assert(ok);
@@ -23,6 +23,8 @@ int main(int argc,char**argv){
  assert(imported.saveProject(project));assert(read(source)==original);
  assert(!imported.save(source));assert(!imported.saveArrangedMidi(source));assert(!imported.saveArrangedMidi(exported));
  assert(QFile::remove(source));
+ const auto legacy=dir.filePath("legacy.xivms");assert(QFile::copy(project,legacy));
+ MidiFile legacyOpened(legacy,&ok);assert(ok && legacyOpened.isProject());
  MidiFile reopened(project,&ok);assert(ok && reopened.isProject());
  assert(reopened.track(0)->assignedChannel()==-1 && reopened.track(0)->muted() && reopened.track(0)->hidden());
  assert(reopened.projectRegions()==state);

@@ -149,6 +149,10 @@ public:
 
     void setGMDrumLabelsVisible(bool show);
     bool gmDrumLabelsVisible() const { return _showGMDrumLabels; }
+    void goToPlayhead();
+    bool nudgeSelectedNotes(int ticks);
+    std::function<void()> captureNoteSelection();
+    std::function<void(int)> pianoWidthChanged;
     int pianoGutterWidth() const { return lineNameWidth; }
 
     // === Event Access ===
@@ -733,6 +737,7 @@ private:
     int startTimeX, endTimeX, startLineY, endLineY;
 
     /** \brief Width of the piano key area in pixels */
+    bool _resizingPiano = false;
     int lineNameWidth;
 
     /** \brief Height of the timeline area in pixels */

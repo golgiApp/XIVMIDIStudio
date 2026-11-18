@@ -71,6 +71,7 @@
 #include "../midi/PlayerThread.h"
 #include "PianoRollGrid.h"
 #include <QMessageBox>
+#include <QTimer>
 #include <QPushButton>
 #include "../region/GuitarPrograms.h"
 #include "../midi/MidiInput.h"
@@ -92,6 +93,22 @@ class ArrangementWidget final : public QWidget {
     enum class RegionDragMode { Move, Duplicate, TrimLeft, TrimRight, Loop };
 public:
     explicit ArrangementWidget(QWidget *parent = nullptr) : QWidget(parent) {
+        auto *edgeScroll = new QTimer(this);
+        edgeScroll->setInterval(30);
+        connect(edgeScroll, &QTimer::timeout, this, [this]() {
+            if (!_regionDragging || !_file || !(QApplication::mouseButtons() & Qt::LeftButton)) return;
+            const QPoint pos = mapFromGlobal(QCursor::pos());
+            int pixels = 0;
+            if (pos.x() < headerWidth + 32) pixels = -std::min(24, (headerWidth + 32 - pos.x()) / 3 + 1);
+            else if (pos.x() > width() - 32) pixels = std::min(24, (pos.x() - width() + 32) / 3 + 1);
+            if (!pixels) return;
+            _originMs = std::max(0, _originMs + int(pixels / _scale));
+            updateRegionDragTarget(pos);
+            refreshHorizontalRange();
+            if (scrollTimeRequested) scrollTimeRequested(_originMs);
+            update();
+        });
+        edgeScroll->start();
         setMinimumHeight(130);
         setMouseTracking(true);
         setAttribute(Qt::WA_Hover);
@@ -206,6 +223,14 @@ public:
         return tick;
     }
 
+    std::function<std::function<void()>()> captureNoteSelection;
+    std::function<void()> pendingNoteSelection;
+    void goToPlayhead() {
+        if (!_file) return;
+        const int ms = MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : _file->msOfTick(_file->cursorTick());
+        setOriginMs(std::max(0, ms - visibleTimeMs() / 2));
+        if (scrollTimeRequested) scrollTimeRequested(_originMs);
+    }
     bool canEditQuantize() const {
         return _file && _regionsReady && !MidiInput::recording();
     }
@@ -307,6 +332,9 @@ public:
         for (const auto &section : _sections) endTick = std::max(endTick, section.end);
         const auto songEnd = static_cast<long long>(
             std::max(_file->maxTime(), _file->msOfTick(endTick))) + 12000;
+        if (_regionDragging) return static_cast<int>(std::min(
+            std::max(static_cast<long long>(_originMs) + visibleMs, songEnd),
+            static_cast<long long>(std::numeric_limits<int>::max())));
         return static_cast<int>(std::clamp(songEnd - visibleMs,
                      0LL, static_cast<long long>(std::numeric_limits<int>::max())));
     }
@@ -393,6 +421,7 @@ public:
         _tempoSelected = -1;
         _tempoDrag = TempoDrag::None;
         _sectionPressed = false;
+        pendingNoteSelection = {};
         _regionsReady = false;
         _regionTracks.clear();
         _lastSavedRegionTracks = file ? *file->tracks() : QList<MidiTrack *>{};
@@ -426,6 +455,7 @@ public:
                         if (refreshSelection && selectTrackRequested)
                             selectTrackRequested(_selected);
                         if (refreshSelection && regionViewChanged) regionViewChanged();
+                        if (pendingNoteSelection) { auto restore = std::move(pendingNoteSelection); pendingNoteSelection = {}; restore(); }
                     });
             connect(file, &MidiFile::trackChanged, this,
                     [this]() { rebuildPreview(); });
@@ -1436,7 +1466,7 @@ protected:
             if (r && row >= 0 && row < _file->tracks()->size()) {
                 _trackHeaderSelected = false;
                 setFocus(Qt::MouseFocusReason);
-                const bool add = e->modifiers().testFlag(Qt::ShiftModifier);
+                const bool add = bool(e->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier));
                 if (add && (r->id == _selectedRegionId || _selectedRegionIds.count(r->id))) {
                     const int tick = timelineTickAt(pos.x());
                     const auto &regions = _regions.regions();
@@ -1846,6 +1876,7 @@ private:
         explicit RegionHistoryEntry(ArrangementWidget *widget)
             : _owner(widget), _fileAtCapture(widget ? widget->_file.data() : nullptr) {
             if (widget) {
+                if (widget->captureNoteSelection) _restoreNotes = widget->captureNoteSelection();
                 _regionsAtCapture = widget->_regions;
                 _sectionsAtCapture = widget->_sections;
                 _tracksAtCapture = widget->_regionTracks;
@@ -1879,6 +1910,7 @@ private:
                 w->assignedTrackChannels() != w->_lastSavedRegionChannels)
                 w->_regionTrackEditPendingSave = true;
             w->_regionHistoryRefreshPending = true;
+            w->pendingNoteSelection = old->_restoreNotes;
             w->_regions = old->_regionsAtCapture;
             w->_sections = old->_sectionsAtCapture;
             w->_sectionPressed = false;
@@ -1900,6 +1932,7 @@ private:
         }
         QPointer<QWidget> _owner;
         QPointer<MidiFile> _fileAtCapture;
+        std::function<void()> _restoreNotes;
         xiv::MidiRegionModel _regionsAtCapture;
         QVector<SongSection> _sectionsAtCapture;
         QList<MidiTrack *> _tracksAtCapture;

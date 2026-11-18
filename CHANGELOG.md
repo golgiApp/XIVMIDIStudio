@@ -4,6 +4,10 @@ Rudimentary changelog of new features & fixes between recent versions.
 A more complete summary of all noteworthly changes can be found on the releases page.
 https://github.com/Meowchestra/MidiEditor/releases
 
+## [0.4.2] - 2026-11-18
+
+XIV MIDI Studio: `.xms` projects with legacy `.xivms` reading, shared-channel editing, out-of-range note stripes, selection restoration, one-tick nudging, playhead navigation, drag scrolling, persistent grid/panel settings, and toolbar/interface cleanup. See README for details.
+
 ## [4.5.0] - 2026-05-03
 
 <details>

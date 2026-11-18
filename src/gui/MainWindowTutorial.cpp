@@ -159,7 +159,7 @@ void MainWindow::startTutorial() {
         {tr("Loop the Tuba pattern"), tr("Drag the upper-right loop handle to measure 13 for two full repeats after the original."),
          tr("Grab the loop icon near the top-right corner. The finished region has three passes.")},
         {tr("Copy the Tuba region"), tr("Right-click the looped Tuba region and choose Copy Region."),
-         tr("The whole looped passage will be available to paste.")},
+         tr("The whole looped passage will be available to paste. Track View remembers copied regions separately from Piano Roll notes. Paste uses the clipboard for the view you are editing.")},
         {tr("Go to measure 21"), tr("Click measure 21 on the Arrangement timeline ruler."),
          tr("The copied Tuba passage will start at the playhead.")},
         {tr("Paste onto Tuba"), tr("Right-click the Tuba lane and choose Paste Region at Playhead, or press Ctrl+V with Tuba selected."),

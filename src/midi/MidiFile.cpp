@@ -155,7 +155,7 @@ MidiFile::MidiFile(QString path, bool *ok, QStringList *log) {
     QJsonObject project;
     QByteArray midiBytes;
     QBuffer embedded;
-    const bool openingProject = path.endsWith(".xivms", Qt::CaseInsensitive);
+    const bool openingProject = (path.endsWith(".xms", Qt::CaseInsensitive) || path.endsWith(".xivms", Qt::CaseInsensitive));
     if (openingProject) {
         QJsonParseError error;
         const auto doc = QJsonDocument::fromJson(f->readAll(), &error);
@@ -1784,7 +1784,7 @@ QStringList MidiFile::unassignedNoteTrackNames() const {
 bool MidiFile::save(QString path) { return saveProject(path); }
 
 bool MidiFile::saveProject(const QString &path) {
-    if (!path.endsWith(".xivms", Qt::CaseInsensitive) || xiv::insideInstallFolder(path) ||
+    if (!(path.endsWith(".xms", Qt::CaseInsensitive) || path.endsWith(".xivms", Qt::CaseInsensitive)) || xiv::insideInstallFolder(path) ||
         xiv::sameUserPath(path, _sourcePath)) return false;
     xiv::MidiRegionModel validated;
     if (!xiv::decodeProjectRegions(_projectRegions, numTracks(), validated)) return false;

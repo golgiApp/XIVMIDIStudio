@@ -128,8 +128,8 @@ void LayoutSettingsWidget::setupUI() {
     // Top Row: Toolbar Visibility and Icon Size
     QHBoxLayout *topRowLayout = new QHBoxLayout();
     
-    _showToolbarCheckbox = new QCheckBox("Show Toolbar", this);
-    _showToolbarCheckbox->setToolTip("Show or hide the main toolbar.");
+    _showToolbarCheckbox = new QCheckBox("Show optional tool buttons", this);
+    _showToolbarCheckbox->setToolTip("Show selected optional tools in the main control bar.");
     connect(_showToolbarCheckbox, SIGNAL(toggled(bool)), this, SLOT(toolbarVisibleToggled(bool)));
     topRowLayout->addWidget(_showToolbarCheckbox);
 
@@ -282,6 +282,8 @@ void LayoutSettingsWidget::saveSettings() {
         Appearance::setToolbarTwoRowMode(_twoRowMode);
         Appearance::setToolbarVisible(_showToolbarCheckbox->isChecked());
 
+        if (!_actionsList->count() && !_secondRowList->count()) return;
+
         // Save action order and enabled states
         QStringList actionOrder;
         QStringList enabledActions;
@@ -369,27 +371,26 @@ void LayoutSettingsWidget::populateActionsList(bool forceRepopulation) {
     // Get available actions
     _availableActions = getDefaultActions();
 
-    // ALWAYS use clean defaults of the FULL customized list
-    // This means: comprehensive action order with default enabled/disabled states
-    QStringList orderToUse = getComprehensiveActionOrder(); // Full list in proper order
-    QStringList defaultEnabledActions = getDefaultEnabledActions(); // Default enabled states
-
-    // Use empty enabled actions list to force default enabled state
-    QStringList enabledActions;
-
-    // Get row distribution
+    QStringList orderToUse = Appearance::toolbarActionOrder();
+    const bool saved = !orderToUse.isEmpty();
+    if (!saved) orderToUse = getComprehensiveActionOrder();
+    QStringList defaultEnabledActions = getDefaultEnabledActions();
+    QStringList enabledActions = saved ? Appearance::toolbarEnabledActions() : defaultEnabledActions;
     QStringList row1Actions, row2Actions;
-    if (_twoRowMode) {
-        getDefaultRowDistribution(row1Actions, row2Actions);
-    } else {
-        row1Actions = orderToUse;
+    bool second = false;
+    for (const auto &id : orderToUse) {
+        if (id == "row_separator") { second = _twoRowMode; continue; }
+        (second ? row2Actions : row1Actions).append(id);
     }
+    for (const auto &id : getComprehensiveActionOrder())
+        if (id != "row_separator" && !row1Actions.contains(id) && !row2Actions.contains(id))
+            row1Actions.append(id);
 
     // Populate Row 1
     for (const QString &actionId: row1Actions) {
         for (ToolbarActionInfo &info: _availableActions) {
             if (info.id == actionId) {
-                info.enabled = enabledActions.isEmpty()
+                info.enabled = !saved
                                    ? (defaultEnabledActions.contains(actionId) || info.essential)
                                    : (enabledActions.contains(actionId) || info.essential);
 
@@ -406,7 +407,7 @@ void LayoutSettingsWidget::populateActionsList(bool forceRepopulation) {
         for (const QString &actionId: row2Actions) {
             for (ToolbarActionInfo &info: _availableActions) {
                 if (info.id == actionId) {
-                    info.enabled = enabledActions.isEmpty()
+                    info.enabled = !saved
                                        ? (defaultEnabledActions.contains(actionId) || info.essential)
                                        : (enabledActions.contains(actionId) || info.essential);
 
@@ -422,9 +423,7 @@ void LayoutSettingsWidget::populateActionsList(bool forceRepopulation) {
     _actionsList->blockSignals(false);
     _secondRowList->blockSignals(false);
 
-    // Connect signals for item changes
-    connect(_actionsList, SIGNAL(itemChanged(QListWidgetItem*)), this, SLOT(itemCheckStateChanged(QListWidgetItem*)));
-    connect(_secondRowList, SIGNAL(itemChanged(QListWidgetItem*)), this, SLOT(itemCheckStateChanged(QListWidgetItem*)));
+    // Item-change signals are connected once in the constructor.
 }
 
 
@@ -436,10 +435,8 @@ void LayoutSettingsWidget::customizeToolbarToggled(bool customizeToolbarEnabled)
     _customizationWidget->setVisible(customizeToolbarEnabled);
 
     if (customizeToolbarEnabled) {
-        // ALWAYS reset to clean defaults when enabling customization
-        // This prevents corruption from previous states
-        Appearance::setToolbarActionOrder(QStringList()); // Clear any existing custom order
-        Appearance::setToolbarEnabledActions(QStringList()); // Clear any existing custom enabled state
+        // Reopen the saved customization without resetting it.
+        // Preserve the saved layout when customization is toggled.
 
         // Block signals during repopulation to prevent cascading updates
         _actionsList->blockSignals(true);
@@ -448,7 +445,7 @@ void LayoutSettingsWidget::customizeToolbarToggled(bool customizeToolbarEnabled)
         // Clear and repopulate with fresh defaults for current mode
         _actionsList->clear();
         _secondRowList->clear();
-        populateActionsList(true); // This will now use clean defaults
+        populateActionsList(true);
 
         // Unblock signals after repopulation is complete
         _actionsList->blockSignals(false);
@@ -463,9 +460,7 @@ void LayoutSettingsWidget::customizeToolbarToggled(bool customizeToolbarEnabled)
         // Update toolbar to show the clean defaults
         triggerToolbarUpdate();
     } else {
-        // When disabling customization, clear custom settings and use defaults
-        Appearance::setToolbarActionOrder(QStringList());
-        Appearance::setToolbarEnabledActions(QStringList());
+        // Keep the saved layout while optional buttons are disabled.
         // Clear the lists to save memory
         _actionsList->clear();
         _secondRowList->clear();
@@ -489,8 +484,7 @@ void LayoutSettingsWidget::rowModeChanged() {
     if (_customizationWidget->isVisible()) {
         // ALWAYS reset to clean defaults when switching modes with customization enabled
         // This prevents order corruption and ensures consistent behavior
-        Appearance::setToolbarActionOrder(QStringList()); // Clear any existing custom order
-        Appearance::setToolbarEnabledActions(QStringList()); // Clear any existing custom enabled state
+        // Preserve the saved layout when customization is toggled.
 
         // Show/hide second row based on mode
         _secondRowLabel->setVisible(_twoRowMode);
@@ -503,7 +497,7 @@ void LayoutSettingsWidget::rowModeChanged() {
         // Clear and repopulate with fresh defaults for new mode
         _actionsList->clear();
         _secondRowList->clear();
-        populateActionsList(true); // This will use clean defaults for the new mode
+        populateActionsList(true);
 
         // Unblock signals after repopulation is complete
         _actionsList->blockSignals(false);
@@ -515,9 +509,7 @@ void LayoutSettingsWidget::rowModeChanged() {
         triggerToolbarUpdate();
     } else {
         // When customization is disabled, just update the toolbar with default layout
-        // Clear any existing custom settings to ensure defaults are used
-        Appearance::setToolbarActionOrder(QStringList());
-        Appearance::setToolbarEnabledActions(QStringList());
+        // Keep the saved customization for the next time it is enabled.
         // Save the row mode setting so default toolbar respects it
         Appearance::setToolbarTwoRowMode(_twoRowMode);
         // Force immediate toolbar update

@@ -901,6 +901,8 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
                 accent = QColor(colors[index]);
             }
             painter->fillRect(QRect(x, y + 1, ex - x, h), accent);
+            if (n.pitch < 48 || n.pitch > 84)
+                painter->fillRect(QRect(x, y + 1, ex - x, h), QBrush(QColor("#E33C46"), Qt::BDiagPattern));
             painter->setPen(selected ? QColor("#FFE0A4") : accent.darker(150));
             painter->drawRect(QRect(x, y + 1, std::max(0, ex - x - 1),
                                     std::max(0, h - 1)));
@@ -944,50 +946,17 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
         painter->setClipping(false);
     }
     
-    if (MidiPlayer::isPlaying()) {
-        painter->setPen(_cachedPlaybackCursorColor);
-        int x;
-        if (Appearance::smoothPlaybackScrolling()) {
-            // Under Spring-Camera, the viewport itself is smooth.
-            // We use _lastRenderedMs to sync exactly with the camera's clock.
-            x = xPosOfMs(_lastRenderedMs);
-        } else {
-            x = xPosOfMs(MidiPlayer::timeMs());
-        }
-        if (x >= lineNameWidth) {
-            painter->drawLine(x, 0, x, height());
-        }
-        painter->setPen(_cachedForegroundColor);
-    } else if (mouseInRect(TimeLineArea) && _lastHoverMs >= startTimeX && _lastHoverMs <= endTimeX) {
-        // Red hover line (restricted to TimeLineArea as requested)
-        painter->setPen(_cachedPlaybackCursorColor);
-        int x = xPosOfMs(_lastHoverMs);
-        if (x >= lineNameWidth) {
-            painter->drawLine(x, 0, x, height());
-        }
-        painter->setPen(_cachedForegroundColor);
+    // The same gold line and handle as the arrangement playhead.
+    const int playheadMs = MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick());
+    const int playheadX = xPosOfMs(playheadMs);
+    if (playheadX >= lineNameWidth && playheadX < width()) {
+        painter->setPen(QPen(QColor("#FFDD75"), 2));
+        painter->drawLine(playheadX, 25, playheadX, height());
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#FFDD75"));
+        painter->drawPolygon(QPolygon{QPoint(playheadX - 8, 12), QPoint(playheadX + 8, 12), QPoint(playheadX, 25)});
     }
-
-    // Timeline area is the top 50px. Use this to bind the cursor instead of timeHeight
-    // which may include the marker row (e.g. 66px) causing the cursor to stretch down.
     int rulerHeight = 50;
-
-    // paint the cursorTick of file
-    if (midiFile()->cursorTick() >= startTick && midiFile()->cursorTick() <= endTick) {
-        painter->setPen(Qt::darkGray); // Original color for both modes
-        int x = xPosOfMs(msOfTick(midiFile()->cursorTick()));
-        painter->drawLine(x, 0, x, height());
-        QPointF points[3] = {
-            QPointF(x - 8, rulerHeight / 2 + 2),
-            QPointF(x + 8, rulerHeight / 2 + 2),
-            QPointF(x, rulerHeight - 2),
-        };
-
-        painter->setBrush(QBrush(_cachedCursorTriangleColor, Qt::SolidPattern));
-
-        painter->drawPolygon(points, 3);
-        painter->setPen(Qt::gray); // Original color for both modes
-    }
 
     // paint the pauseTick of file if >= 0
     if (!MidiPlayer::isPlaying() && midiFile()->pauseTick() >= startTick && midiFile()->pauseTick() <= endTick) {
@@ -1443,9 +1412,7 @@ void MatrixWidget::setFile(MidiFile *f) {
     connect(file->protocol(), SIGNAL(actionFinished()), this, SLOT(update()));
     connect(file->protocol(), &Protocol::actionFinished, this, [this]() {
         if (_regionViewEnabled) {
-            _allSelection.clear();
             _allGesture = RegionGesture::None;
-            _regionSelection.clear();
             _regionGesture = RegionGesture::None;
             refreshRegionViewNotes();
             update();
@@ -1547,12 +1514,7 @@ void MatrixWidget::setRegionView(const xiv::MidiRegionModel &model,
     // Existing native edit tools remain enabled where their source note
     // positions still equal the arranged display. Transformed/looped regions
     // need dedicated region-note IDs before editing may safely be enabled.
-    _regionEditingSafe = !allTracksEditing() && focusedRegion && focusedRegion->program < 0 && !focusedRegion->ownedNotes &&
-        focusedRegion->startTick == focusedRegion->sourceStartTick &&
-        focusedRegion->loopLengthTicks == 0 && !focusedRegion->quantize.active() &&
-        focusedRegion->endNoteMode == xiv::CrossingNoteMode::Keep &&
-        (focusedRegion->sourceStartTick == 0 ||
-         focusedRegion->startNoteMode == xiv::CrossingNoteMode::Keep);
+    _regionEditingSafe = false; // Always use track-local projected notes for editing and drawing.
     refreshRegionViewNotes();
     if (!changedSelection) {
         _allSelection.clear();
@@ -1619,6 +1581,10 @@ void MatrixWidget::refreshRegionViewNotes() {
         _regionViewNotes.push_back(note);
         _regionViewIds.push_back(static_cast<int>(i) + 1);
     }
+    std::set<int> visibleNotes;
+    for (const auto &note : _regionViewNotes) visibleNotes.insert(note.ownedNoteId ? note.ownedNoteId : note.sourceId);
+    for (auto it = _regionSelection.begin(); it != _regionSelection.end();)
+        if (!visibleNotes.count(*it)) it = _regionSelection.erase(it); else ++it;
     const std::set<int> visibleIds(_regionViewIds.begin(), _regionViewIds.end());
     for (auto it = _allSelection.begin(); it != _allSelection.end();) {
         if (!visibleIds.count(*it)) it = _allSelection.erase(it);
@@ -1768,6 +1734,8 @@ std::set<std::pair<int, int>> MatrixWidget::projectedEditSelection() const {
 }
 
 void MatrixWidget::restoreEditedNoteSelection(const std::set<std::pair<int, int>> &ownedIds) {
+    _regionSelection.clear();
+    _allSelection.clear();
     for (const auto &note : _regionViewNotes) {
         if (!ownedIds.count({note.regionId, note.ownedNoteId})) continue;
         if (allTracksEditing()) _allSelection.insert(allNoteId(note));
@@ -1798,7 +1766,8 @@ bool MatrixWidget::beginAllTracksGesture(QMouseEvent *event) {
         deleteAllTracksSelection();
     } else if (event->button() == Qt::RightButton || dynamic_cast<const NewNoteTool *>(tool)) {
         _allGesture = RegionGesture::Add;
-    } else if (hit && dynamic_cast<const StandardTool *>(tool)) {
+    } else if (hit && (dynamic_cast<const StandardTool *>(tool) ||
+               (dynamic_cast<const SelectTool *>(tool) && (event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))))) {
         const int id = allNoteId(*hit);
         const bool additive = bool(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier));
         if (additive && _allSelection.erase(id)) {
@@ -2148,9 +2117,13 @@ bool MatrixWidget::pasteNotesAtPlayhead() {
         return false;
     }
 
+    std::set<std::pair<int, int>> pastedSelection;
+    const auto oldCount = regionNotesForEdit(*region).size();
+    for (std::size_t i = oldCount; i < combined.size(); ++i) pastedSelection.emplace(region->id, combined[i].id);
     auto updated = _regionViewModel;
     if (!updated.replaceOwnedNotes(region->id, std::move(combined))) return false;
     commitProjectedRegions(std::move(updated), tr("Paste Notes"));
+    restoreEditedNoteSelection(pastedSelection);
     return true;
 }
 
@@ -2425,7 +2398,7 @@ bool MatrixWidget::beginRegionGesture(QMouseEvent *event) {
         _regionGesture = RegionGesture::Add;
         return true;
     }
-    if (!dynamic_cast<const SelectTool *>(tool)) {
+    if (!dynamic_cast<const SelectTool *>(tool) || additive) {
         for (auto it = _regionViewNotes.crbegin(); it != _regionViewNotes.crend(); ++it) {
             const QRect bounds = regionNoteRect(*it);
             if (!bounds.contains(point)) continue;
@@ -2687,6 +2660,14 @@ void MatrixWidget::selectPitchRange(int low, int high) {
 }
 
 void MatrixWidget::mouseMoveEvent(QMouseEvent *event) {
+    if (_resizingPiano) {
+        setLineNameWidth(std::clamp(qRound(event->position().x()), 48, 300));
+        calcSizes();
+        if (pianoWidthChanged) pianoWidthChanged(lineNameWidth);
+        event->accept(); return;
+    }
+    if (std::abs(event->position().x() - lineNameWidth) <= 4) setCursor(Qt::SplitHCursor);
+    else unsetCursor();
     if (_rulerDragging && (event->buttons() & Qt::LeftButton)) {
         seekTimeRequested(msOfXPos(std::clamp(qRound(event->position().x()),
                                              lineNameWidth, std::max(lineNameWidth, width() - 1))));
@@ -2953,11 +2934,16 @@ void MatrixWidget::leaveEvent(QEvent *event) {
 }
 
 void MatrixWidget::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && std::abs(event->position().x() - lineNameWidth) <= 4) {
+        _resizingPiano = true;
+        event->accept();
+        return;
+    }
     if (file && seekTimeRequested && event->button() == Qt::LeftButton &&
         event->modifiers() == Qt::NoModifier &&
         (TimeLineArea.contains(event->position()) ||
          (event->position().x() >= lineNameWidth && event->position().y() >= timeHeight &&
-          std::abs(event->position().x() - xPosOfMs(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick()))) <= 4))) {
+          std::abs(event->position().x() - xPosOfMs(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick()))) <= 10))) {
         _rulerDragging = true;
         seekTimeRequested(msOfXPos(qRound(event->position().x())));
         event->accept();
@@ -3185,6 +3171,7 @@ void MatrixWidget::mousePressEvent(QMouseEvent *event) {
 }
 
 void MatrixWidget::mouseReleaseEvent(QMouseEvent *event) {
+    if (_resizingPiano) { _resizingPiano = false; event->accept(); return; }
     if (_rulerDragging && event->button() == Qt::LeftButton) {
         _rulerDragging = false;
         seekTimeRequested(msOfXPos(std::clamp(qRound(event->position().x()),
@@ -4594,4 +4581,43 @@ void MatrixWidget::paintRecordingPreview(QPainter *painter) {
     }
 
     painter->restore();
+}
+
+void MatrixWidget::goToPlayhead() {
+    if (!file) return;
+    const int ms = MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : file->msOfTick(file->cursorTick());
+    startTimeX = std::max(0, ms - (endTimeX - startTimeX) / 2);
+    calcSizes();
+    emit scrollChanged(startTimeX, std::max(0, std::max(file->maxTime(), file->msOfTick(file->arrangementEndTick())) - (endTimeX - startTimeX)), startLineY, std::max(0, lastVisibleLine() - (endLineY - startLineY)));
+    update();
+}
+
+std::function<void()> MatrixWidget::captureNoteSelection() {
+    QPointer<MatrixWidget> widget(this);
+    const auto region = _regionSelection, all = _allSelection;
+    return [widget, region, all]() {
+        if (!widget) return;
+        widget->_regionSelection = region;
+        widget->_allSelection = all;
+        widget->updateAllTracksView();
+    };
+}
+
+bool MatrixWidget::nudgeSelectedNotes(int ticks) {
+    if (!file || !enabled || !_regionViewEnabled || MidiInput::recording() || !commitProjectedRegions) return false;
+    std::set<int> selected;
+    std::set<std::pair<int, int>> restored;
+    for (std::size_t i = 0; i < _regionFullNotes.size(); ++i) {
+        const auto &note = _regionFullNotes[i];
+        const int id = static_cast<int>(i) + 1;
+        if (allTracksEditing() ? _allSelection.count(id) :
+            (note.regionId == _selectedViewRegionId && _regionSelection.count(note.ownedNoteId ? note.ownedNoteId : note.sourceId))) {
+            selected.insert(id); restored.emplace(note.regionId, id);
+        }
+    }
+    auto model = _regionViewModel;
+    if (!xiv::nudgeProjectedNotes(model, _regionFullNotes, selected, ticks, file->numTracks())) return false;
+    commitProjectedRegions(std::move(model), tr("Nudge Notes"));
+    restoreEditedNoteSelection(restored);
+    return true;
 }

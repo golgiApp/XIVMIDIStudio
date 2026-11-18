@@ -752,6 +752,7 @@ public slots:
      * \brief Rebuilds the toolbar from current settings.
      */
     void rebuildToolbarFromSettings();
+    void refreshWorkspaceTools();
 
     /**
      * \brief Quantizes the selected events to the current grid.

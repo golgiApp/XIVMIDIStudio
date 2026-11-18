@@ -5,7 +5,7 @@
 
 **Arrange like a producer with XIV MIDI Studio, a MIDI-focused digital audio workstation built for Final Fantasy XIV Bard Performance.**
 
-XIV MIDI Studio brings Meowchestra’s MidiEditor features into a workspace inspired by Logic Pro X, Ableton Live, and Soundtrap. Open a MIDI file, assign SoundFont instruments, edit your arrangement and notes, save your work as a self-contained `.xivms` project, and export a separate standard MIDI file.
+XIV MIDI Studio brings Meowchestra’s MidiEditor features into a workspace inspired by Logic Pro X, Ableton Live, and Soundtrap. Open a MIDI file, assign SoundFont instruments, edit your arrangement and notes, save your work as a self-contained `.xms` project, and export a separate standard MIDI file.
 
 ## Interactive tutorial
 
@@ -15,9 +15,22 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 - Use the Piano Roll and **GM Drum Map** to select notes by pitch, remove the open hi-hat hits, and transpose the Bass Drum notes.
 - Try Global Tracks, the Piano Roll views and grid options, and playback controls.
 
-## What's new in v4.1.2
+## What's new in v0.4.2
 
-- **Save projects, export MIDI.** Open/import MIDI without overwriting it. Save Project (Ctrl+S) and Save Project As write self-contained `.xivms` files with source musical data, arrangement regions, loops, quantization, guitar sounds, sections, track routing, and mute/visibility state. Projects can include unassigned working tracks and reopen without the original MIDI. Undo history is session-only. External SoundFonts are not embedded.
+- **Shorter project extension.** New projects use `.xms`. Existing `.xivms` projects still open; Save Project As offers `.xms`.
+- **Editing with shared channels.** Instrument changes use a free channel when possible and remain available when none is free. Shared channels retain standard MIDI instrument-sharing behavior. Region editing is also available on unassigned working tracks.
+- **Out-of-range notes.** Notes below MIDI 48 or above MIDI 84 have a red diagonal stripe overlay in the Piano Roll. Their instrument colors and selection outlines remain visible. Notes and exported pitches are unchanged.
+- **Selection that stays useful.** Undo/Redo restores note selections for arrangement edits, pasted notes remain selected, and Ctrl+click and Shift+click toggle individual notes or regions in a selection.
+- **Fine timing adjustments.** Shift+Left and Shift+Right nudge selected notes by one MIDI tick, preserving note lengths and spacing. Nudges stop at region boundaries and support Undo. For quantized or looped regions, the affected region's audible timing is baked into independent notes before nudging so the one-tick change is retained.
+- **Navigation.** Go to Playhead brings it into view in both editors without seeking. The Piano Roll uses the arrangement's gold playhead design and larger grab area. Dragging regions near a horizontal edge scrolls the timeline until release.
+- **Remembered workspace.** The grid choice persists across restarts. Drag the Inspector divider or the edge of the piano-key area to resize it; widths are remembered. The top control bar can scroll horizontally in narrow windows.
+- **Toolbar customization.** Settings reloads the saved button order and checks. Optional selected actions appear in the main control bar without restoring the old editing toolbar. Existing main-bar actions are not duplicated.
+- **Interface cleanup.** Removed the legacy right-hand panel and its View entry. Global Show All/Mute All buttons have balanced icon sizes; Add Track uses a compact button with a tooltip. The tutorial explains separate region and note clipboards.
+
+### Project workflow
+
+
+- **Save projects, export MIDI.** Open/import MIDI without overwriting it. Save Project (Ctrl+S) and Save Project As write self-contained `.xms` files with source musical data, arrangement regions, loops, quantization, guitar sounds, sections, track routing, and mute/visibility state. Projects can include unassigned working tracks and reopen without the original MIDI. Undo history is session-only. External SoundFonts are not embedded.
 - **Choose where your music lives.** First project saves default to Documents and ask for a filename. Export MIDI asks for a separate `.mid` destination, defaulting to the project/source folder and `Song - Export.mid`. Both reject the installation folder and its subfolders. The original import is protected from overwrite. Keep backups of your chosen project/export folders; installation cleanup remains unchanged.
 - **Clear export requirements.** Unassigned tracks containing notes must be routed before MIDI export; they do not prevent saving a project. Export does not mark unsaved project changes as saved.
 - **Simpler controls.** The legacy editing toolbar is retired. A visible playback-volume slider sits after Fix XIV Channels, with a speaker/mute toggle and hover explanations. Global eye and speaker buttons replace Track Actions; mixed states restore all tracks on the first click.
@@ -28,7 +41,7 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 
 ### Saving and reinstalling
 
-Save your project somewhere outside the application folder, such as Documents. Reopen the `.xivms` file to continue editing; use Export MIDI for a file to play elsewhere. The installer/uninstaller can delete the installation folder, so do not manually place personal files there. Saved work in separate folders survives reinstalling the application, but unsaved edits do not. Autosave recovery is not included in this release.
+Save your project somewhere outside the application folder, such as Documents. Reopen the `.xms` file to continue editing; use Export MIDI for a file to play elsewhere. The installer/uninstaller can delete the installation folder, so do not manually place personal files there. Saved work in separate folders survives reinstalling the application, but unsaved edits do not. Autosave recovery is not included in this release.
 
 ## What's new in v0.4.1
 

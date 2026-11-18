@@ -2,8 +2,8 @@
 <Package>
     <DisplayName>Manual</DisplayName>
     <Description>Manual of MidiEditor</Description>
-    <Version>4.5.0</Version>
-    <ReleaseDate>2026-05-03</ReleaseDate>
+    <Version>0.4.2</Version>
+    <ReleaseDate>2026-11-18</ReleaseDate>
     <Name>org.midieditor.manual</Name>
     <Default>true</Default>
     <ForcedInstallation>false</ForcedInstallation>

@@ -48,5 +48,31 @@ inline bool materializeProjectedRegions(MidiRegionModel &model,
     return materializeProjectedRegionIds(model, rendered, regions, trackCount);
 }
 
+// Fine nudging bakes the current rendered timing so active quantization cannot
+// round a one-tick edit back to its previous position. Commit only on success.
+inline bool nudgeProjectedNotes(MidiRegionModel &model,
+                                const std::vector<RenderedRegionNote> &rendered,
+                                const std::set<int> &selected, int ticks, int trackCount) {
+    if (ticks == 0 || selected.empty()) return false;
+    auto draft = model;
+    if (!materializeProjectedRegions(draft, rendered, selected, trackCount)) return false;
+    std::set<int> affected;
+    for (int id : selected) affected.insert(rendered[id - 1].regionId);
+    for (int id : affected) {
+        const auto *region = draft.find(id);
+        auto notes = *region->ownedNotes;
+        for (auto &note : notes) if (selected.count(note.id)) {
+            const auto start = static_cast<long long>(note.startTick) + ticks;
+            const auto end = static_cast<long long>(note.endTick) + ticks;
+            if (start < 0 || end > region->duration()) return false;
+            note.startTick = static_cast<int>(start);
+            note.endTick = static_cast<int>(end);
+        }
+        if (!draft.replaceOwnedNotes(id, std::move(notes))) return false;
+    }
+    model = std::move(draft);
+    return true;
+}
+
 } // namespace xiv
 #endif

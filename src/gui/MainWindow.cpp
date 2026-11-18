@@ -430,6 +430,11 @@ MainWindow::MainWindow(QString initFile)
         connect(slider, &QSlider::valueChanged, mw_matrixWidget,
                 vertical ? &MatrixWidget::setVerticalZoom : &MatrixWidget::setHorizontalZoom);
     }
+    mw_matrixWidget->setLineNameWidth(std::clamp(_settings->value("xiv/piano_width", 110).toInt(), 48, 300));
+    mw_matrixWidget->pianoWidthChanged = [this](int width) {
+        _settings->setValue("xiv/piano_width", width);
+        if (_miscWidgetControl) _miscWidgetControl->setFixedWidth(std::max(1, width - 6));
+    };
     gridLayout->addWidget(new QLabel(tr("Grid"), pianoHeader));
     auto *gridButtons = new QButtonGroup(pianoHeader);
     using GridMode = xiv::PianoRollGridMode;
@@ -440,7 +445,7 @@ MainWindow::MainWindow(QString initFile)
         button->setAccessibleName(tooltip);
         button->setCheckable(true);
         gridButtons->addButton(button, static_cast<int>(mode));
-        button->setChecked(mode == GridMode::Auto);
+        button->setChecked(static_cast<int>(mode) == _settings->value("xiv/grid_mode", 0).toInt());
         gridLayout->addWidget(button);
     };
     addGridButton(GridMode::Auto, tr("Auto (recommended)"), tr("Automatically adjust the grid as you zoom"));
@@ -448,6 +453,7 @@ MainWindow::MainWindow(QString initFile)
     addGridButton(GridMode::Eighth, tr("1/8"), tr("Show a fixed eighth-note grid"));
     addGridButton(GridMode::Sixteenth, tr("1/16"), tr("Show a fixed sixteenth-note grid"));
     connect(gridButtons, &QButtonGroup::idClicked, this, [this](int id) {
+        _settings->setValue("xiv/grid_mode", id);
         mw_matrixWidget->setPianoRollGridMode(static_cast<GridMode>(id));
         if (_arrangementWidget) _arrangementWidget->setGridMode(static_cast<GridMode>(id));
         _matrixWidgetContainer->update();
@@ -662,7 +668,7 @@ MainWindow::MainWindow(QString initFile)
 
     auto *inspector = new QWidget(arrangementPane);
     inspector->setObjectName(QStringLiteral("xivInspector"));
-    inspector->setFixedWidth(220);
+    inspector->setMinimumWidth(220);
     inspector->setStyleSheet(QStringLiteral(R"(
         QWidget#xivInspector QGroupBox {
             color: #E8EFF8;
@@ -752,10 +758,13 @@ MainWindow::MainWindow(QString initFile)
     inspectorScroll->setFrameShape(QFrame::NoFrame);
     inspectorScroll->setWidgetResizable(true);
     inspectorScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    inspectorScroll->setFixedWidth(236);
+    inspectorScroll->setMinimumWidth(236);
     inspectorScroll->setWidget(inspector);
     inspectorScroll->setVisible(_settings->value("xiv/inspector_visible", false).toBool());
-    arrangementRow->addWidget(inspectorScroll);
+    auto *inspectorSplitter = new QSplitter(Qt::Horizontal, arrangementPane);
+    inspectorSplitter->setChildrenCollapsible(false);
+    arrangementRow->addWidget(inspectorSplitter);
+    inspectorSplitter->addWidget(inspectorScroll);
     auto *inspectorAction = new QAction(tr("Inspector"), this);
     inspectorAction->setCheckable(true);
     inspectorAction->setChecked(!inspectorScroll->isHidden());
@@ -768,7 +777,13 @@ MainWindow::MainWindow(QString initFile)
     auto *lanesLayout = new QVBoxLayout(lanesPane);
     lanesLayout->setContentsMargins(0, 0, 0, 0);
     lanesLayout->setSpacing(0);
-    arrangementRow->addWidget(lanesPane, 1);
+    inspectorSplitter->addWidget(lanesPane);
+    inspectorSplitter->setStretchFactor(0, 0);
+    inspectorSplitter->setStretchFactor(1, 1);
+    inspectorSplitter->setSizes({_settings->value("xiv/inspector_width", 260).toInt(), 1000});
+    connect(inspectorSplitter, &QSplitter::splitterMoved, this, [this, inspectorSplitter]() {
+        _settings->setValue("xiv/inspector_width", inspectorSplitter->sizes().value(0));
+    });
     QScrollArea *arrangementArea = new QScrollArea(lanesPane);
     arrangementArea->setObjectName(QStringLiteral("ffxivArrangementScrollArea"));
     arrangementArea->setWidgetResizable(true);
@@ -777,6 +792,10 @@ MainWindow::MainWindow(QString initFile)
     arrangementArea->setStyleSheet(QStringLiteral(
         "QScrollArea#ffxivArrangementScrollArea { background: #202329; border: none; }"));
     _arrangementWidget = new ArrangementWidget(arrangementArea);
+    int savedGrid = _settings->value("xiv/grid_mode", 0).toInt();
+    if (savedGrid != 4 && savedGrid != 8 && savedGrid != 16) savedGrid = 0;
+    mw_matrixWidget->setPianoRollGridMode(static_cast<GridMode>(savedGrid));
+    _arrangementWidget->setGridMode(static_cast<GridMode>(savedGrid));
     arrangementArea->setWidget(_arrangementWidget);
     lanesLayout->addWidget(arrangementArea);
     // Arrangement timeline scrolls independently of the Piano Roll. The
@@ -831,11 +850,7 @@ MainWindow::MainWindow(QString initFile)
                         for (int ch = 0; ch < 16; ++ch)
                             occupied[ch] = channelUsedByAnotherTrack(file, track, ch) || ch == destination;
                         destination = FFXIVClone::findUnusedMelodicChannel(occupied, destination);
-                        if (destination < 0) {
-                            QMessageBox::information(this, tr("No free MIDI channel"),
-                                tr("This track shares its channel. Free a channel before changing its instrument."));
-                            return;
-                        }
+                        if (destination < 0) destination = activeChannel;
                     }
                     const auto change = [&]() {
                     file->protocol()->startNewAction(tr("Change Track Instrument"));
@@ -898,18 +913,15 @@ MainWindow::MainWindow(QString initFile)
     };
     _arrangementWidget->ensureRegionProgramChannel = [this]() {
         auto *track = _arrangementWidget->selectedTrack();
-        if (!file || !track || track->assignedChannel() < 0) return false;
+        if (!file || !track) return false;
+        if (track->assignedChannel() < 0) return true;
         const int channel = track->assignedChannel();
         if (!channelUsedByAnotherTrack(file, track, channel)) return true;
         std::array<bool, 16> occupied{};
         for (int ch = 0; ch < 16; ++ch)
             occupied[ch] = channelUsedByAnotherTrack(file, track, ch) || ch == channel;
         const int available = FFXIVClone::findUnusedMelodicChannel(occupied, channel);
-        if (available < 0) {
-            QMessageBox::information(this, tr("No free MIDI channel"),
-                tr("Free a MIDI channel before assigning a different guitar sound to this region."));
-            return false;
-        }
+        if (available < 0) return true; // Shared routing must not lock region editing.
         moveTrackEventsToChannel(track, available);
         return track->assignedChannel() == available;
     };
@@ -1055,6 +1067,7 @@ MainWindow::MainWindow(QString initFile)
     };
     if (_matrixWidgetContainer != mw_matrixWidget)
         _matrixWidgetContainer->installEventFilter(mw_matrixWidget);
+    _arrangementWidget->captureNoteSelection = [this]() { return mw_matrixWidget->captureNoteSelection(); };
     _arrangementWidget->regionViewChanged = [this, refreshInspector]() {
         refreshInspector();
         if (!_arrangementWidget || !mw_matrixWidget || !file ||
@@ -1112,7 +1125,10 @@ MainWindow::MainWindow(QString initFile)
     auto *addTrackButton = new QToolButton(trackHeaderActions);
     addTrackButton->setObjectName(QStringLiteral("xivAddTrack"));
     addTrackButton->setDefaultAction(newTrack);
-    addTrackButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    addTrackButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    addTrackButton->setToolTip(tr("Add Track"));
+    addTrackButton->setFixedWidth(30);
+    addTrackButton->setStyleSheet(QStringLiteral("QToolButton { padding: 2px; }"));
     addTrackButton->setIconSize(QSize(14, 14));
     trackHeaderActions->setStyleSheet(QStringLiteral(
         "QToolButton { color:#eef0f2; background:#454952; border:1px solid #5e6570;"
@@ -1154,7 +1170,8 @@ MainWindow::MainWindow(QString initFile)
     auto *visibilityAll = new QToolButton(trackHeaderActions);
     auto *audibilityAll = new QToolButton(trackHeaderActions);
     for (auto *button : {visibilityAll, audibilityAll}) {
-        button->setFixedSize(28, 24);
+        button->setFixedSize(30, 26);
+        button->setStyleSheet(QStringLiteral("QToolButton { padding: 2px; }"));
         button->setIconSize(QSize(20, 20));
         trackHeaderLayout->addWidget(button);
     }
@@ -1807,9 +1824,37 @@ MainWindow::MainWindow(QString initFile)
     rightSplitter->setStretchFactor(0, 5);
     rightSplitter->setStretchFactor(1, 5);
 
+    auto *goToPlayhead = new QAction(tr("Go to Playhead"), this);
+    goToPlayhead->setToolTip(tr("Bring the playhead into view in both editors without moving it"));
+    connect(goToPlayhead, &QAction::triggered, this, [this]() {
+        _arrangementWidget->goToPlayhead(); mw_matrixWidget->goToPlayhead();
+    });
+    addControl(goToPlayhead);
+    for (int direction : {-1, 1}) {
+        auto *nudge = new QAction(direction < 0 ? tr("Nudge Notes Left") : tr("Nudge Notes Right"), this);
+        nudge->setShortcut(QKeySequence(Qt::SHIFT | (direction < 0 ? Qt::Key_Left : Qt::Key_Right)));
+        nudge->setToolTip(tr("Move selected notes by one MIDI tick, independently of the grid"));
+        addAction(nudge);
+        noteMenu->addAction(nudge);
+        connect(nudge, &QAction::triggered, this, [this, direction]() { mw_matrixWidget->nudgeSelectedNotes(direction); });
+    }
+    auto *optionalTools = new QToolBar(controlBar);
+    optionalTools->setObjectName("xivOptionalTools");
+    optionalTools->setIconSize(QSize(20, 20));
+    optionalTools->setMaximumWidth(280);
+    optionalTools->setMinimumWidth(0);
+    bar->addWidget(optionalTools);
+    refreshWorkspaceTools();
+
     // Add the Widgets to the central Layout
     centralLayout->setSpacing(0);
-    centralLayout->addWidget(controlBar, 0, 0);
+    auto *controlScroll = new QScrollArea(central);
+    controlScroll->setWidget(controlBar);
+    controlScroll->setWidgetResizable(true);
+    controlScroll->setFrameShape(QFrame::NoFrame);
+    controlScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlScroll->setFixedHeight(controlBar->sizeHint().height() + 18);
+    centralLayout->addWidget(controlScroll, 0, 0);
     centralLayout->addWidget(buttons, 1, 0);
     centralLayout->addWidget(mainSplitter, 2, 0);
     centralLayout->setRowStretch(2, 1);
@@ -2514,7 +2559,7 @@ static QString chooseSongDestination(QWidget *parent, const QString &title, QStr
                                      const QString &extension, const QString &source = QString()) {
     for (;;) {
         QString path = QFileDialog::getSaveFileName(parent, title, initial,
-            extension == ".xivms" ? QObject::tr("XIV MIDI Studio projects (*.xivms)") : QObject::tr("MIDI files (*.mid *.midi)"));
+            extension == ".xms" ? QObject::tr("XIV MIDI Studio projects (*.xms)") : QObject::tr("MIDI files (*.mid *.midi)"));
         if (path.isEmpty()) return {};
         const QString chosenPath = path;
         if (!path.endsWith(extension, Qt::CaseInsensitive) &&
@@ -2554,7 +2599,7 @@ void MainWindow::saveas() {
     const QString name = file->path().isEmpty() ? tr("Untitled") : QFileInfo(file->path()).completeBaseName();
     const QString directory = file->isProject() && !xiv::insideInstallFolder(file->path())
         ? QFileInfo(file->path()).absolutePath() : QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString path = chooseSongDestination(this, tr("Save Project As"), QDir(directory).filePath(name + ".xivms"), ".xivms", file->sourcePath());
+    const QString path = chooseSongDestination(this, tr("Save Project As"), QDir(directory).filePath(name + ".xms"), ".xms", file->sourcePath());
     if (path.isEmpty()) return;
     if (_arrangementWidget) _arrangementWidget->saveRegionLayout();
     if (!file->saveProject(path)) {
@@ -2586,7 +2631,7 @@ void MainWindow::load() {
     QString gp   = "*.gtp *.gp3 *.gp4 *.gp5 *.gp6 *.gp7 *.gp8 *.gpx *.gp";
 
     QString filter =
-        QString("Projects and Music (*.xivms %1 %2 %3 %4 %5);;XIV MIDI Studio Projects (*.xivms);;"
+        QString("Projects and Music (*.xms *.xivms %1 %2 %3 %4 %5);;XIV MIDI Studio Projects (*.xms *.xivms);;"
                 "MIDI Files (%1);;"
                 "MML Files (%2);;"
                 "MusicXML Files (%3);;"
@@ -2647,7 +2692,7 @@ void MainWindow::openFile(QString filePath) {
     }
 
     if (ok && mf) {
-        if (!lowerPath.endsWith(".xivms")) mf->setSourcePath(QFileInfo(filePath).absoluteFilePath());
+        if (!lowerPath.endsWith(".xivms") && !lowerPath.endsWith(".xms")) mf->setSourcePath(QFileInfo(filePath).absoluteFilePath());
         stop();
         setFile(mf);
         updateRecentPathsList();
@@ -6525,7 +6570,10 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     _pianoRollGMDrumsAction->setToolTip(tr("Show General MIDI drum names by pitch; custom drum maps may differ"));
     connect(_pianoRollGMDrumsAction, &QAction::toggled, this, [this](bool show) {
         _settings->setValue("ffxiv/gm_drum_labels", show);
-        if (mw_matrixWidget) mw_matrixWidget->setGMDrumLabelsVisible(show);
+        if (mw_matrixWidget) {
+            mw_matrixWidget->setGMDrumLabelsVisible(show);
+            if (_settings->contains("xiv/piano_width")) mw_matrixWidget->setLineNameWidth(std::clamp(_settings->value("xiv/piano_width").toInt(), 48, 300));
+        }
         // The velocity editor and horizontal scrollbar must stay synchronized
         // with the Piano Roll time axis when the keyboard gutter is resized.
         const int gutter = mw_matrixWidget ? mw_matrixWidget->pianoGutterWidth() : (show ? 242 : 110);
@@ -6544,16 +6592,8 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
             _pianoRollGMDrumsAction, &QAction::setChecked);
     _pianoRollGMDrumsButton->setChecked(_pianoRollGMDrumsAction->isChecked());
 
-    QAction *showDetails = new QAction(tr("Show Channel and Event Panels"), this);
-    showDetails->setCheckable(true);
-    showDetails->setChecked(_settings->value("ffxiv/show_detail_panels", false).toBool());
-    showDetails->setToolTip(tr("Show the optional Channel, Protocol and Event inspectors"));
-    connect(showDetails, &QAction::toggled, this, [this](bool show) {
-        if (rightSplitter) rightSplitter->setVisible(show);
-        _settings->setValue("ffxiv/show_detail_panels", show);
-    });
-    viewMB->addAction(showDetails);
-    if (rightSplitter) rightSplitter->setVisible(showDetails->isChecked());
+    // Track and routing controls live in the arrangement and Inspector.
+    if (rightSplitter) rightSplitter->hide();
     viewMB->addSeparator();
 
     viewMB->addAction(_allTracksVisible);
@@ -8297,6 +8337,7 @@ void MainWindow::updateRenderingMode() {
 }
 
 void MainWindow::rebuildToolbarFromSettings() {
+    refreshWorkspaceTools();
     // Dedicated method for rebuilding toolbar when settings change
     // Prevent rapid successive rebuilds
     static bool isRebuilding = false;
@@ -8959,3 +9000,22 @@ void MainWindow::fixXIVChannels() {
     }
 }
 
+
+void MainWindow::refreshWorkspaceTools() {
+    auto *toolbar = findChild<QToolBar *>("xivOptionalTools");
+    if (!toolbar) return;
+    toolbar->clear();
+    const bool show = Appearance::toolbarCustomizeEnabled() && Appearance::toolbarVisible();
+    toolbar->setVisible(show);
+    if (!show) return;
+    const auto enabled = Appearance::toolbarEnabledActions();
+    const auto bar = toolbar->parentWidget();
+    for (const auto &id : Appearance::toolbarActionOrder()) {
+        auto *action = _actionMap.value(id);
+        if (!action || !enabled.contains(id)) continue;
+        bool alreadyShown = false;
+        for (auto *button : bar->findChildren<QToolButton *>())
+            if (!toolbar->isAncestorOf(button) && button->defaultAction() == action) alreadyShown = true;
+        if (!alreadyShown) toolbar->addAction(action);
+    }
+}
