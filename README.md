@@ -5,7 +5,7 @@
 
 **Arrange like a producer with XIV MIDI Studio, a MIDI-focused digital audio workstation built for Final Fantasy XIV Bard Performance.**
 
-XIV MIDI Studio brings Meowchestra’s MidiEditor features into a workspace inspired by Logic Pro X, Ableton Live, and Soundtrap. Open a MIDI file, assign SoundFont instruments, edit your arrangement and notes, and save your work as a standard MIDI file.
+XIV MIDI Studio brings Meowchestra’s MidiEditor features into a workspace inspired by Logic Pro X, Ableton Live, and Soundtrap. Open a MIDI file, assign SoundFont instruments, edit your arrangement and notes, save your work as a self-contained `.xivms` project, and export a separate standard MIDI file.
 
 ## Interactive tutorial
 
@@ -14,6 +14,21 @@ In the **Startup** window, select **Start the interactive tutorial** to open the
 - Turn a Flute and Bass Drum duet into a trio by adding a Tuba part.
 - Use the Piano Roll and **GM Drum Map** to select notes by pitch, remove the open hi-hat hits, and transpose the Bass Drum notes.
 - Try Global Tracks, the Piano Roll views and grid options, and playback controls.
+
+## What's new in v4.1.2
+
+- **Save projects, export MIDI.** Open/import MIDI without overwriting it. Save Project (Ctrl+S) and Save Project As write self-contained `.xivms` files with source musical data, arrangement regions, loops, quantization, guitar sounds, sections, track routing, and mute/visibility state. Projects can include unassigned working tracks and reopen without the original MIDI. Undo history is session-only. External SoundFonts are not embedded.
+- **Choose where your music lives.** First project saves default to Documents and ask for a filename. Export MIDI asks for a separate `.mid` destination, defaulting to the project/source folder and `Song - Export.mid`. Both reject the installation folder and its subfolders. The original import is protected from overwrite. Keep backups of your chosen project/export folders; installation cleanup remains unchanged.
+- **Clear export requirements.** Unassigned tracks containing notes must be routed before MIDI export; they do not prevent saving a project. Export does not mark unsaved project changes as saved.
+- **Simpler controls.** The legacy editing toolbar is retired. A visible playback-volume slider sits after Fix XIV Channels, with a speaker/mute toggle and hover explanations. Global eye and speaker buttons replace Track Actions; mixed states restore all tracks on the first click.
+- **Project quantization.** The Project inspector has its own Quantize dropdown with the same presets as regions; Apply to Entire Project does not require a selected region.
+- **Visible track reordering.** A translucent track-header preview follows the drag and an insertion line marks its destination.
+- **Copy several regions.** Copy and paste preserves selected regions across tracks, including relative time and track spacing, with the earliest region aligned to the playhead. The original track placement is retained when the destination selection has not changed. Add sufficient destination tracks when pasting the group farther down the track list. Paste is one undo step.
+- **Readable guitar changes.** Region labels include the track and effective guitar sound without deleting custom region names. The five guitar sounds have distinct region colors.
+
+### Saving and reinstalling
+
+Save your project somewhere outside the application folder, such as Documents. Reopen the `.xivms` file to continue editing; use Export MIDI for a file to play elsewhere. The installer/uninstaller can delete the installation folder, so do not manually place personal files there. Saved work in separate folders survives reinstalling the application, but unsaved edits do not. Autosave recovery is not included in this release.
 
 ## What's new in v0.4.1
 

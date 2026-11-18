@@ -1,3 +1,5 @@
+#include "../support/ProjectDocument.h"
+#include <QStandardPaths>
 #include "WorkspaceControlIcons.h"
 #include "../support/XivInstrumentGroups.h"
 #include <QSlider>
@@ -734,10 +736,14 @@ MainWindow::MainWindow(QString initFile)
 
     auto *projectGroup = new QGroupBox(tr("Project"), inspector);
     auto *projectForm = new QFormLayout(projectGroup);
+    auto *projectGrid = new QComboBox(projectGroup);
+    projectGrid->addItem(tr("Off"), -1);
+    for (int i = 0; i < 7; ++i) projectGrid->addItem(tr(xiv::quantizeNames[i]), i);
+    projectForm->addRow(tr("Quantize"), projectGrid);
     auto *quantizeProjectRegions = new QToolButton(projectGroup);
     quantizeProjectRegions->setText(tr("Apply to Entire Project"));
     quantizeProjectRegions->setToolTip(
-        tr("Apply the selected region's grid, strength, and swing to every region in the project."));
+        tr("Apply the project Quantize dropdown setting to every region in the project."));
     projectForm->addRow(quantizeProjectRegions);
     inspectorLayout->addWidget(projectGroup);
     inspectorLayout->addStretch(1);
@@ -943,7 +949,7 @@ MainWindow::MainWindow(QString initFile)
         assignedChannel->setEnabled(hasTrack && editable);
         instrument->setEnabled(hasTrack && editable);
         quantizeTrackRegions->setEnabled(hasTrack && region && editable);
-        quantizeProjectRegions->setEnabled(region && editable);
+        quantizeProjectRegions->setEnabled(document && editable);
     };
     _arrangementWidget->inspectorChanged = refreshInspector;
     _arrangementWidget->regionQuantizeRequested = [inspectorAction, grid, refreshInspector]() {
@@ -973,25 +979,14 @@ MainWindow::MainWindow(QString initFile)
             _arrangementWidget->applyQuantize(settings, ArrangementWidget::QuantizeScope::Track);
         }
     });
-    connect(quantizeProjectRegions, &QToolButton::clicked, this, [this, grid]() {
-        if (!_arrangementWidget->canEditQuantize()) return;
-        const auto *region = _arrangementWidget->regionModel().find(
-            _arrangementWidget->selectedRegionId());
-        if (!region) return;
-
-        const QPointer<MidiFile> document = _arrangementWidget->midiFile();
-        const auto settings = region->quantize;
-        const QString prompt = settings.active()
-            ? tr("Apply the selected region's quantization to every region in this project?\n\n"
-                 "Grid: %1\nStrength: %2%\nSwing: %3%")
-                .arg(grid->currentText()).arg(settings.strength).arg(settings.swing)
-            : tr("The selected region's quantization is off or has zero strength. "
-                 "Apply that setting to every region in this project?");
-        if (QMessageBox::question(this, tr("Quantize Project Regions"), prompt,
-                                  QMessageBox::Yes | QMessageBox::Cancel,
-                                  QMessageBox::Cancel) != QMessageBox::Yes ||
-            !document || document.data() != _arrangementWidget->midiFile()) return;
-
+    connect(quantizeProjectRegions, &QToolButton::clicked, this, [this, projectGrid]() {
+        if (!_arrangementWidget->canEditQuantize() || !file) return;
+        const QPointer<MidiFile> document = file;
+        const auto settings = xiv::quantizePreset(projectGrid->currentData().toInt(), file->ticksPerQuarter());
+        if (QMessageBox::question(this, tr("Quantize Project Regions"),
+            tr("Apply %1 to every region in this project?").arg(projectGrid->currentText()),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes ||
+            !document || document.data() != file) return;
         _arrangementWidget->applyQuantize(settings, ArrangementWidget::QuantizeScope::Project);
     });
     _arrangementWidget->renameTrackRequested = [this](MidiTrack *track) {
@@ -1155,21 +1150,42 @@ MainWindow::MainWindow(QString initFile)
             SLOT(allTracksInvisible()));
     tracksTB->addAction(_allTracksInvisible);
 
-    auto *trackActionsButton = new QToolButton(trackHeaderActions);
-    trackActionsButton->setText(tr("Track Actions"));
-    trackActionsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    trackActionsButton->setToolTip(tr("Mute, unmute, show or hide all tracks"));
-    trackActionsButton->setPopupMode(QToolButton::InstantPopup);
-    trackActionsButton->setFixedHeight(24);
-    trackActionsButton->setStyleSheet(QStringLiteral("QToolButton { padding-right:17px; }"));
-    auto *trackActionsMenu = new QMenu(trackActionsButton);
-    trackActionsMenu->addAction(_allTracksAudible);
-    trackActionsMenu->addAction(_allTracksMute);
-    trackActionsMenu->addSeparator();
-    trackActionsMenu->addAction(_allTracksVisible);
-    trackActionsMenu->addAction(_allTracksInvisible);
-    trackActionsButton->setMenu(trackActionsMenu);
-    trackHeaderLayout->addWidget(trackActionsButton);
+    // Direct global controls: eye first, speaker second. Mixed states restore all.
+    auto *visibilityAll = new QToolButton(trackHeaderActions);
+    auto *audibilityAll = new QToolButton(trackHeaderActions);
+    for (auto *button : {visibilityAll, audibilityAll}) {
+        button->setFixedSize(28, 24);
+        button->setIconSize(QSize(20, 20));
+        trackHeaderLayout->addWidget(button);
+    }
+    const auto refreshGlobalTracks = [this, visibilityAll, audibilityAll]() {
+        bool hidden = false, muted = false;
+        if (file) for (auto *track : *file->tracks()) {
+            hidden |= track->hidden(); muted |= track->muted();
+        }
+        visibilityAll->setEnabled(file && file->numTracks());
+        audibilityAll->setEnabled(file && file->numTracks());
+        visibilityAll->setIcon(xiv::controlIcon(hidden ? xiv::ControlIcon::Hidden : xiv::ControlIcon::Eye));
+        audibilityAll->setIcon(xiv::controlIcon(muted ? xiv::ControlIcon::Muted : xiv::ControlIcon::Volume));
+        visibilityAll->setToolTip(hidden ? tr("Show all tracks") : tr("Hide all tracks"));
+        audibilityAll->setToolTip(muted ? tr("Unmute all tracks") : tr("Mute all tracks"));
+        visibilityAll->setAccessibleName(visibilityAll->toolTip());
+        audibilityAll->setAccessibleName(audibilityAll->toolTip());
+    };
+    connect(visibilityAll, &QToolButton::clicked, this, [this, refreshGlobalTracks]() {
+        if (!file) return;
+        const bool hidden = std::any_of(file->tracks()->begin(), file->tracks()->end(), [](MidiTrack *t){ return t->hidden(); });
+        (hidden ? _allTracksVisible : _allTracksInvisible)->trigger(); refreshGlobalTracks();
+    });
+    connect(audibilityAll, &QToolButton::clicked, this, [this, refreshGlobalTracks]() {
+        if (!file) return;
+        const bool muted = std::any_of(file->tracks()->begin(), file->tracks()->end(), [](MidiTrack *t){ return t->muted(); });
+        (muted ? _allTracksAudible : _allTracksMute)->trigger(); refreshGlobalTracks();
+    });
+    auto *globalTrackTimer = new QTimer(trackHeaderActions);
+    connect(globalTrackTimer, &QTimer::timeout, this, refreshGlobalTracks);
+    globalTrackTimer->start(100);
+    refreshGlobalTracks();
 
     const auto pinTrackHeader = [this, trackHeaderActions](int top) {
         _arrangementWidget->setRulerTop(top);
@@ -1507,43 +1523,33 @@ MainWindow::MainWindow(QString initFile)
     snapButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     snapButton->setFixedWidth(34);
     addControl(_actionMap.value("metronome"), true);
-    auto *master = new QToolButton(controlBar);
-    master->setIconSize(QSize(24, 24));
-    master->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    master->setFixedSize(38, 34);
-    master->setToolTip(tr("Master playback volume"));
-    master->setAccessibleName(tr("Master playback volume"));
-    auto *volumeMenu = new QMenu(master);
-    auto *volumePanel = new QWidget(volumeMenu);
-    auto *volumeLayout = new QVBoxLayout(volumePanel);
-    auto *volume = new QSlider(Qt::Horizontal, volumePanel);
-    volume->setRange(0, 100);
-    volume->setValue(_settings->value("playback/master_volume", 100).toInt());
-    volume->setAccessibleName(tr("Playback volume"));
-    auto *mute = new QCheckBox(tr("Mute playback"), volumePanel);
-    mute->setChecked(_settings->value("playback/master_muted", false).toBool());
-    volumeLayout->addWidget(new QLabel(tr("Playback volume"), volumePanel));
-    volumeLayout->addWidget(volume);
-    volumeLayout->addWidget(mute);
-    auto *volumeAction = new QWidgetAction(volumeMenu);
-    volumeAction->setDefaultWidget(volumePanel);
-    volumeMenu->addAction(volumeAction);
-    master->setMenu(volumeMenu);
-    master->setPopupMode(QToolButton::InstantPopup);
-    bar->addWidget(master);
-    const auto applyVolume = [this, volume, mute, master]() {
-        _settings->setValue("playback/master_volume", volume->value());
-        _settings->setValue("playback/master_muted", mute->isChecked());
-        MidiOutput::setMasterVolume(mute->isChecked() ? 0.0 : volume->value() / 100.0);
-        master->setIcon(xiv::controlIcon(mute->isChecked() || !volume->value()
-            ? xiv::ControlIcon::Muted : xiv::ControlIcon::Volume));
-    };
-    connect(volume, &QSlider::valueChanged, this, applyVolume);
-    connect(mute, &QCheckBox::toggled, this, applyVolume);
-    applyVolume();
-    bar->addSpacing(10);
     auto *fixChannelsButton = addControl(_fixXIVChannelsTracksAction);
     fixChannelsButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    bar->addSpacing(8);
+    auto *volume = new QSlider(Qt::Horizontal, controlBar);
+    volume->setRange(0, 100);
+    volume->setFixedWidth(100);
+    volume->setValue(_settings->value("playback/master_volume", 100).toInt());
+    volume->setAccessibleName(tr("Playback volume"));
+    bar->addWidget(volume);
+    auto *master = new QToolButton(controlBar);
+    master->setIconSize(QSize(24, 24));
+    master->setFixedSize(34, 34);
+    master->setCheckable(true);
+    master->setChecked(_settings->value("playback/master_muted", false).toBool());
+    bar->addWidget(master);
+    const auto applyVolume = [this, volume, master]() {
+        _settings->setValue("playback/master_volume", volume->value());
+        _settings->setValue("playback/master_muted", master->isChecked());
+        MidiOutput::setMasterVolume(master->isChecked() ? 0.0 : volume->value() / 100.0);
+        master->setIcon(xiv::controlIcon(master->isChecked() ? xiv::ControlIcon::Muted : xiv::ControlIcon::Volume));
+        master->setToolTip(master->isChecked() ? tr("Unmute playback") : tr("Mute playback"));
+        master->setAccessibleName(master->toolTip());
+        volume->setToolTip(tr("Playback volume: %1%").arg(volume->value()));
+    };
+    connect(volume, &QSlider::valueChanged, this, applyVolume);
+    connect(master, &QToolButton::toggled, this, applyVolume);
+    applyVolume();
     bar->addStretch(1);
     auto *autoZoom = new QToolButton(controlBar);
     autoZoom->setText(tr("Fit Tracks"));
@@ -2497,92 +2503,66 @@ void MainWindow::backMarker() {
 static bool requireAssignedNoteTracks(MidiFile *file, QWidget *parent) {
     const auto names = file->unassignedNoteTrackNames();
     if (names.isEmpty()) return true;
-    QMessageBox::warning(parent, QObject::tr("Assign MIDI channels before saving"),
+    QMessageBox::warning(parent, QObject::tr("Assign MIDI channels before exporting"),
         QObject::tr("These working tracks contain notes but have no MIDI channel:\n\n%1\n\n"
-                    "Assign channels in the Inspector or move their notes to assigned tracks, then save again. "
+                    "Assign channels in the Inspector or move their notes to assigned tracks, then export again. "
                     "Your notes have not been removed.").arg(names.join(QStringLiteral("\n"))));
     return false;
 }
 
-void MainWindow::save() {
-    if (file && !requireAssignedNoteTracks(file, this)) return;
-    if (!file)
-        return;
-
-    if (QFile(file->path()).exists()) {
-        bool printMuteWarning = false;
-
-        for (int i = 0; i < 16; i++) {
-            MidiChannel *ch = file->channel(i);
-            if (ch->mute()) {
-                printMuteWarning = true;
-            }
+static QString chooseSongDestination(QWidget *parent, const QString &title, QString initial,
+                                     const QString &extension, const QString &source = QString()) {
+    for (;;) {
+        QString path = QFileDialog::getSaveFileName(parent, title, initial,
+            extension == ".xivms" ? QObject::tr("XIV MIDI Studio projects (*.xivms)") : QObject::tr("MIDI files (*.mid *.midi)"));
+        if (path.isEmpty()) return {};
+        const QString chosenPath = path;
+        if (!path.endsWith(extension, Qt::CaseInsensitive) &&
+            !(extension == ".mid" && path.endsWith(".midi", Qt::CaseInsensitive))) path += extension;
+        if (xiv::insideInstallFolder(path) || xiv::sameUserPath(path, source)) {
+            QMessageBox::warning(parent, QObject::tr("Choose another location"),
+                xiv::insideInstallFolder(path)
+                ? QObject::tr("Save your music outside the XIV MIDI Studio installation folder. That folder is deleted during uninstall or reinstall.")
+                : QObject::tr("The original imported file is protected. Choose a different filename."));
+            initial = QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).filePath(QFileInfo(path).fileName());
+            continue;
         }
-        foreach(MidiTrack* track, *(file->tracks())) {
-            if (track->muted()) {
-                printMuteWarning = true;
-            }
+        if (path != chosenPath && QFileInfo::exists(path) &&
+            QMessageBox::question(parent, QObject::tr("Replace existing file?"),
+                QObject::tr("%1 already exists. Replace it?").arg(path),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+            initial = path;
+            continue;
         }
-
-        if (printMuteWarning) {
-            QMessageBox::information(this, tr("Channels/Tracks Mute"), tr("One or more channels/tracks are not audible. They will be audible in the saved file."), QMessageBox::Ok);
-        }
-
-        if (!file->save(file->path())) {
-            QMessageBox::warning(this, tr("Error"), QString(tr("The file could not be saved. Please make sure that the destination directory exists and that you have the correct access rights to write into this directory.")));
-        } else {
-            if (_arrangementWidget) _arrangementWidget->saveRegionLayout(file->path());
-            setWindowModified(false);
-        }
-    } else {
-        saveas();
+        return path;
     }
 }
 
+void MainWindow::save() {
+    if (!file) return;
+    if (!file->isProject() || xiv::insideInstallFolder(file->path())) { saveas(); return; }
+    if (_arrangementWidget) _arrangementWidget->saveRegionLayout();
+    if (!file->saveProject(file->path())) {
+        QMessageBox::warning(this, tr("Save Project"), tr("The project could not be saved. Your previous saved file has not been replaced."));
+        return;
+    }
+    setWindowModified(false);
+}
+
 void MainWindow::saveas() {
-    if (file && !requireAssignedNoteTracks(file, this)) return;
-    if (!file)
+    if (!file) return;
+    const QString name = file->path().isEmpty() ? tr("Untitled") : QFileInfo(file->path()).completeBaseName();
+    const QString directory = file->isProject() && !xiv::insideInstallFolder(file->path())
+        ? QFileInfo(file->path()).absolutePath() : QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString path = chooseSongDestination(this, tr("Save Project As"), QDir(directory).filePath(name + ".xivms"), ".xivms", file->sourcePath());
+    if (path.isEmpty()) return;
+    if (_arrangementWidget) _arrangementWidget->saveRegionLayout();
+    if (!file->saveProject(path)) {
+        QMessageBox::warning(this, tr("Save Project"), tr("The project could not be saved. Your previous saved file has not been replaced."));
         return;
-
-    const QFileInfo oldFile(file->path());
-    const QString dir = oldFile.isFile() ? oldFile.absolutePath() : startDirectory;
-    QString newPath = QFileDialog::getSaveFileName(this, tr("Save As..."), dir);
-
-    if (newPath == "") {
-        return;
     }
-
-    // automatically add '.mid' extension
-    if (!newPath.endsWith(".mid", Qt::CaseInsensitive) && !newPath.endsWith(".midi", Qt::CaseInsensitive)) {
-        newPath.append(".mid");
-    }
-
-    if (file->saveStandaloneMidi(newPath)) {
-        bool printMuteWarning = false;
-
-        for (int i = 0; i < 16; i++) {
-            MidiChannel *ch = file->channel(i);
-            if (ch->mute() || !ch->visible()) {
-                printMuteWarning = true;
-            }
-        }
-        foreach(MidiTrack* track, *(file->tracks())) {
-            if (track->muted() || track->hidden()) {
-                printMuteWarning = true;
-            }
-        }
-
-        if (printMuteWarning) {
-            QMessageBox::information(this, tr("Channels/Tracks Mute"), tr("One or more channels/tracks are not audible. They will be audible in the saved file."), QMessageBox::Ok);
-        }
-
-        file->setPath(newPath);
-        setWindowTitle(QApplication::applicationName() + " - " + file->path() + "[*]");
-        updateRecentPathsList();
-        setWindowModified(false);
-    } else {
-        QMessageBox::warning(this, tr("Error"), QString(tr("The file could not be saved. Please make sure that the destination directory exists and that you have the correct access rights to write into this directory.")));
-    }
+    setWindowTitle(QApplication::applicationName() + " - " + path + "[*]");
+    updateRecentPathsList(); setWindowModified(false);
 }
 
 void MainWindow::load() {
@@ -2590,7 +2570,7 @@ void MainWindow::load() {
     if (file) {
         oldPath = file->path();
         if (!file->saved()) {
-            saveBeforeClose();
+            if (!saveBeforeClose()) return;
         }
     }
 
@@ -2606,7 +2586,7 @@ void MainWindow::load() {
     QString gp   = "*.gtp *.gp3 *.gp4 *.gp5 *.gp6 *.gp7 *.gp8 *.gpx *.gp";
 
     QString filter =
-        QString("Music Files (%1 %2 %3 %4 %5));;"
+        QString("Projects and Music (*.xivms %1 %2 %3 %4 %5);;XIV MIDI Studio Projects (*.xivms);;"
                 "MIDI Files (%1);;"
                 "MML Files (%2);;"
                 "MusicXML Files (%3);;"
@@ -2627,7 +2607,7 @@ void MainWindow::loadFile(QString nfile) {
     if (file) {
         oldPath = file->path();
         if (!file->saved()) {
-            saveBeforeClose();
+            if (!saveBeforeClose()) return;
         }
     }
     if (!nfile.isEmpty()) {
@@ -2667,6 +2647,7 @@ void MainWindow::openFile(QString filePath) {
     }
 
     if (ok && mf) {
+        if (!lowerPath.endsWith(".xivms")) mf->setSourcePath(QFileInfo(filePath).absoluteFilePath());
         stop();
         setFile(mf);
         updateRecentPathsList();
@@ -2907,11 +2888,7 @@ bool MainWindow::saveBeforeClose() {
 
     switch (result) {
         case SaveConfirmDialog::Save:
-            if (!requireAssignedNoteTracks(file, this)) return false;
-            if (QFile(file->path()).exists())
-                file->save(file->path());
-            else saveas();
-            // If saveas was cancelled, file->saved() will remain false
+            save();
             return file->saved();
 
         case SaveConfirmDialog::Discard:
@@ -2926,7 +2903,7 @@ bool MainWindow::saveBeforeClose() {
 void MainWindow::newFile() {
     if (file) {
         if (!file->saved()) {
-            saveBeforeClose();
+            if (!saveBeforeClose()) return;
         }
     }
 
@@ -3458,7 +3435,7 @@ void MainWindow::openRecent(QAction *action) {
 
     if (file) {
         if (!file->saved()) {
-            saveBeforeClose();
+            if (!saveBeforeClose()) return;
         }
     }
 
@@ -5549,7 +5526,7 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
 
     fileMB->addSeparator();
 
-    QAction *saveAction = new QAction(tr("Save"), this);
+    QAction *saveAction = new QAction(tr("Save Project"), this);
     saveAction->setShortcut(QKeySequence::Save);
     _defaultShortcuts["save"] = QList<QKeySequence>() << saveAction->shortcut();
     Appearance::setActionIcon(saveAction, ":/run_environment/graphics/tool/save.png");
@@ -5557,7 +5534,7 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     fileMB->addAction(saveAction);
     _actionMap["save"] = saveAction;
 
-    QAction *saveAsAction = new QAction(tr("Save As..."), this);
+    QAction *saveAsAction = new QAction(tr("Save Project As..."), this);
     saveAsAction->setShortcut(QKeySequence::SaveAs);
     _defaultShortcuts["save_as"] = QList<QKeySequence>() << saveAsAction->shortcut();
     Appearance::setActionIcon(saveAsAction, ":/run_environment/graphics/tool/saveas.png");
@@ -5565,29 +5542,18 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     fileMB->addAction(saveAsAction);
     _actionMap["save_as"] = saveAsAction;
 
-    QAction *exportArrangementAction = new QAction(tr("Export Arranged MIDI..."), this);
+    QAction *exportArrangementAction = new QAction(tr("Export MIDI..."), this);
     exportArrangementAction->setToolTip(tr("Render MIDI region positions into a separate standard MIDI file"));
     connect(exportArrangementAction, &QAction::triggered, this, [this]() {
         if (!file || !requireAssignedNoteTracks(file, this)) return;
-        QString path = QFileDialog::getSaveFileName(
-            this, tr("Export Arranged MIDI"),
-            QFileInfo(file->path()).absolutePath() + QStringLiteral("/arranged.mid"),
-            tr("MIDI files (*.mid *.midi)"));
+        QString directory = file->path().isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) : QFileInfo(file->path()).absolutePath();
+        if (xiv::insideInstallFolder(directory)) directory=QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+        const QString name = file->path().isEmpty() ? tr("Untitled") : QFileInfo(file->path()).completeBaseName();
+        const QString path = chooseSongDestination(this, tr("Export MIDI"),
+            QDir(directory).filePath(name + " - Export.mid"), ".mid", file->sourcePath());
         if (path.isEmpty()) return;
-        if (!path.endsWith(QStringLiteral(".mid"), Qt::CaseInsensitive) &&
-            !path.endsWith(QStringLiteral(".midi"), Qt::CaseInsensitive))
-            path += QStringLiteral(".mid");
-        if (QFileInfo(path).absoluteFilePath() == QFileInfo(file->path()).absoluteFilePath()) {
-            QMessageBox::warning(this, tr("Export Arranged MIDI"),
-                tr("Choose a different file name. Export cannot overwrite the editable source MIDI."));
-            return;
-        }
-        if (QFileInfo::exists(path)) {
-            if (QMessageBox::question(this, tr("Replace exported file?"),
-                tr("Replace the existing MIDI export?")) != QMessageBox::Yes) return;
-        }
         if (!file->saveArrangedMidi(path))
-            QMessageBox::warning(this, tr("Export Arranged MIDI"),
+            QMessageBox::warning(this, tr("Export MIDI"),
                                  tr("Could not export the arranged MIDI file."));
         else statusBar()->showMessage(tr("Arranged MIDI exported"), 4000);
     });
@@ -6775,9 +6741,10 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
 
     _toolbarAction = new QAction(tr("Show Editing Toolbar"), this);
     _toolbarAction->setCheckable(true);
-    _toolbarAction->setChecked(Appearance::toolbarVisible());
+    _toolbarAction->setChecked(false);
     connect(_toolbarAction, SIGNAL(toggled(bool)), this, SLOT(toggleToolbar(bool)));
-    viewMB->addAction(_toolbarAction);
+    _toolbarAction->setVisible(false);
+    _toolbarAction->setEnabled(false);
     _actionMap["show_toolbar"] = _toolbarAction;
 
     auto *eventLanesAction = viewMB->addAction(tr("Show MIDI Event Lanes"));
@@ -7013,7 +6980,7 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
                "track and choose Join Selected Regions Here.</p>"
                "<p><b>Quantize.</b> Open the Inspector for a region's grid, strength, and swing. "
                "Use Quantize Project Regions to apply those settings to every region.</p>"
-               "<p><b>Export.</b> Choose File &gt; Export Arranged MIDI to create a MIDI file "
+               "<p><b>Export.</b> Choose File &gt; Export MIDI to create a MIDI file "
                "with your region edits and track names.</p>"),
             QMessageBox::Ok, this);
         quickStart.setTextFormat(Qt::RichText);
@@ -7277,7 +7244,7 @@ void MainWindow::rebuildToolbar() {
             }
             
             // Explicitly set visibility after recreation
-            _toolbarWidget->setVisible(Appearance::toolbarVisible());
+            _toolbarWidget->setVisible(false);
 
             // Add it back to the layout
             QGridLayout *layout = qobject_cast<QGridLayout *>(parent->layout());
@@ -7695,7 +7662,7 @@ QWidget *MainWindow::createCustomToolbar(QWidget *parent) {
     }
 
     // Set visibility from settings
-    buttonBar->setVisible(Appearance::toolbarVisible());
+    buttonBar->setVisible(false);
 
     return buttonBar;
 }
@@ -8306,7 +8273,7 @@ void MainWindow::updateAll() {
 
     // Update toolbar visibility from settings
     if (_toolbarWidget) {
-        bool showToolbar = Appearance::toolbarVisible();
+        bool showToolbar = false;
         _toolbarWidget->setVisible(showToolbar);
         if (_toolbarAction) {
             _toolbarAction->setChecked(showToolbar);
@@ -8403,7 +8370,7 @@ void MainWindow::rebuildToolbarFromSettings() {
                 refreshToolbarIcons();
 
                 // Update visibility and action state from current settings
-                bool showToolbar = Appearance::toolbarVisible();
+                bool showToolbar = false;
                 _toolbarWidget->setVisible(showToolbar);
                 if (_toolbarAction) {
                     _toolbarAction->blockSignals(true);
@@ -8424,7 +8391,7 @@ void MainWindow::rebuildToolbarFromSettings() {
 
     // Apply visibility after rebuild
     if (_toolbarWidget) {
-        _toolbarWidget->setVisible(Appearance::toolbarVisible());
+        _toolbarWidget->setVisible(false);
     }
 
     // Reset the rebuilding guard
@@ -8634,6 +8601,7 @@ void MainWindow::toggleStatusBar(bool visible) {
 }
 
 void MainWindow::toggleToolbar(bool visible) {
+    visible = false; // retired legacy editing toolbar
     if (_toolbarWidget) {
         _toolbarWidget->setVisible(visible);
     }

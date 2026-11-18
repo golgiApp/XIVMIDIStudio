@@ -57,11 +57,11 @@ SaveConfirmDialog::SaveConfirmDialog(const QString &fileName, const QString &ful
     buttonLayout->setSpacing(10);
 
     // Unify button styles
-    QPushButton *btnSave = new QPushButton(tr("Save"), this);
+    QPushButton *btnSave = new QPushButton(tr("Save Project"), this);
     btnSave->setDefault(true);
     btnSave->setCursor(Qt::PointingHandCursor);
 
-    QPushButton *btnDiscard = new QPushButton(tr("Don't Save"), this);
+    QPushButton *btnDiscard = new QPushButton(tr("Discard Changes"), this);
     btnDiscard->setCursor(Qt::PointingHandCursor);
 
     QPushButton *btnCancel = new QPushButton(tr("Cancel"), this);

@@ -105,6 +105,8 @@ public:
     std::function<void(MidiTrack *)> renameTrackRequested;
     int _headerDragRow = -1;
     QPoint _headerDragStart;
+    QPoint _headerDragPosition;
+    QPixmap _headerDragPreview;
     std::function<void(int)> scrollTimeRequested;
     // Range and page step (in milliseconds) for the arrangement-only scrollbar.
     std::function<void(int, int)> scrollRangeChanged;
@@ -398,7 +400,9 @@ public:
         _regionHistoryRefreshPending = false;
         _selectedRegionId = 0;
         _selectedRegionIds.clear();
-        _solo = nullptr;
+        _solo = file ? file->soloTrack() : nullptr;
+        _copiedTrackFocus = nullptr;
+        _copiedTopTrack = nullptr;
         _originMs = 0;
         if (scrollTimeRequested) scrollTimeRequested(0);
         _hoverTick = -1;
@@ -412,7 +416,6 @@ public:
         _dragMode = RegionDragMode::Move;
         _playheadMs = file ? file->msOfTick(file->cursorTick()) : -1;
         if (file) {
-            file->setSoloTrack(nullptr);
             connect(file->protocol(), &Protocol::actionFinished, this,
                     [this, file]() {
                         if (_file != file) return;
@@ -492,9 +495,25 @@ public:
     }
     MidiTrack *selectedTrack() const { return _selected; }
 
-    static QString regionDisplayName(const xiv::MidiRegion &region) {
-        return region.name.empty() ? tr("Region %1").arg(region.id)
-                                   : QString::fromStdString(region.name);
+    int regionGuitarProgram(const xiv::MidiRegion &region) const {
+        if (xiv::isGuitarProgram(region.program)) return region.program;
+        if (region.ownedNotes && !region.ownedNotes->empty()) {
+            int sound = region.ownedNotes->front().program;
+            for (const auto &note : *region.ownedNotes) if (note.program != sound) return -1;
+            if (xiv::isGuitarProgram(sound)) return sound;
+        }
+        return _file && region.trackIndex >= 0 && region.trackIndex < _file->numTracks()
+            ? xiv::guitarProgramOrDefault(_file->track(region.trackIndex)->progAtTick(0)) : -1;
+    }
+    QString regionDisplayName(const xiv::MidiRegion &region) const {
+        QStringList parts;
+        if (_file && region.trackIndex >= 0 && region.trackIndex < _file->numTracks())
+            parts << _file->track(region.trackIndex)->name();
+        if (!region.name.empty() && !parts.contains(QString::fromStdString(region.name))) parts << QString::fromStdString(region.name);
+        const int sound = regionGuitarProgram(region);
+        const char *names[] = {"Electric Guitar: Overdriven", "Electric Guitar: Clean", "Electric Guitar: Muted", "Electric Guitar: Power Chords", "Electric Guitar: Special"};
+        for (int i=0; i<5; ++i) if(sound==xiv::guitarPrograms[i] && !parts.contains(QString::fromLatin1(names[i]))) parts << QString::fromLatin1(names[i]);
+        return parts.isEmpty() ? tr("Region %1").arg(region.id) : parts.join(QStringLiteral(" | "));
     }
 
     QString selectedRegionName() const {
@@ -603,16 +622,10 @@ public:
         if (inspectorChanged) inspectorChanged();
     }
 
-    // MIDI has no region metadata. The native layout is stored separately next
-    // to the MIDI: song.mid.xivms-regions.json. Writes are atomic; never edit
-    // or overwrite the MIDI events as part of region splitting.
+    // Capture native arrangement metadata in memory for the next project save.
+    // Imported MIDI and legacy sidecars are never modified.
     bool saveRegionLayout(const QString &midiPath = QString()) {
         if (!_regionsReady || !_file) return false;
-        if (_file->isStandaloneMidi()) return true;
-        // Track creation/removal must reach the MIDI and its sidecar together.
-        if (_regionTrackEditPendingSave && midiPath.isEmpty()) return true;
-        const QString path = midiPath.isEmpty() ? _file->path() : midiPath;
-        if (path.trimmed().isEmpty() || !QFileInfo::exists(path)) return false;
         QJsonObject root;
         root.insert(QStringLiteral("format"), QStringLiteral("XIV Midi Studio regions"));
         int version = 1;
@@ -661,11 +674,7 @@ public:
         }
         if (!assignedChannels.isEmpty())
             root.insert(QStringLiteral("assignedChannels"), assignedChannels);
-        QSaveFile output(path + QStringLiteral(".xivms-regions.json"));
-        if (!output.open(QIODevice::WriteOnly)) return false;
-        const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
-        if (output.write(bytes) != bytes.size()) { output.cancelWriting(); return false; }
-        if (!output.commit()) return false;
+        _file->setProjectRegions(root);
         _lastSavedRegionTracks = *_file->tracks();
         _lastSavedRegionChannels = assignedTrackChannels();
         _regionTrackEditPendingSave = false;
@@ -863,6 +872,9 @@ protected:
                     accent.setHsl(hue, std::clamp(saturation, 65, 135),
                                   std::clamp(lightness, 100, 160));
                 }
+                const int sound = regionGuitarProgram(region);
+                const QColor guitarColors[] = {QColor("#CF7676"), QColor("#78ACDB"), QColor("#8AC483"), QColor("#D5A46D"), QColor("#B68AD8")};
+                for(int gi=0;gi<5;++gi) if(sound==xiv::guitarPrograms[gi]) accent=guitarColors[gi];
                 QColor regionFill = accent;
                 regionFill.setAlpha(selectedRegion ? 83 : (chosen ? 66 : 44));
                 const QRect regionRect(x0, y + 6, x1 - x0, laneHeight - 12);
@@ -958,6 +970,16 @@ protected:
             }
         }
 
+        if (_headerDragRow >= 0 && !_headerDragPreview.isNull() &&
+            (_headerDragPosition - _headerDragStart).manhattanLength() >= 8) {
+            const int target = std::clamp((_headerDragPosition.y() - rulerHeight()) / laneHeight, 0, _file->numTracks()-1);
+            const int line = rulerHeight() + (target + (target > _headerDragRow ? 1 : 0)) * laneHeight;
+            p.save(); p.setPen(QPen(QColor("#73C9FF"), 3));
+            p.drawLine(0, line, width(), line);
+            p.setOpacity(0.75);
+            p.drawPixmap(0, rulerHeight() + _headerDragRow * laneHeight + _headerDragPosition.y() - _headerDragStart.y(), _headerDragPreview);
+            p.restore();
+        }
         if (_regionDragging && groupRegionDrag()) {
             paintGroupRegionDrag(p);
         } else if (_regionDragging && _moveRegionId > 0) {
@@ -1391,6 +1413,8 @@ protected:
                     if (selectTrackRequested) selectTrackRequested(track);
                     _headerDragRow = row;
                     _headerDragStart = pos;
+                    _headerDragPosition = pos;
+                    _headerDragPreview = grab(QRect(0, rulerHeight() + row * laneHeight, headerWidth, laneHeight));
                     _trackHeaderSelected = true;
                     _selectedRegionIds.clear();
                     for (const auto &region : _regions.regions())
@@ -1486,7 +1510,9 @@ protected:
 
     void mouseMoveEvent(QMouseEvent *e) override {
         if (_headerDragRow >= 0 && (e->buttons() & Qt::LeftButton)) {
+            _headerDragPosition = e->position().toPoint();
             setCursor(Qt::ClosedHandCursor);
+            update();
             e->accept();
             return;
         }
@@ -1641,7 +1667,7 @@ protected:
         if (_headerDragRow >= 0) {
             const int from = _headerDragRow;
             _headerDragRow = -1;
-            const int to = (int(e->position().y()) - rulerHeight()) / laneHeight;
+            const int to = _file && _file->numTracks() ? std::clamp((int(e->position().y()) - rulerHeight()) / laneHeight, 0, _file->numTracks()-1) : -1;
             if (_file && !MidiPlayer::isPlaying() && canEditQuantize() && to >= 0 && to < _file->numTracks() && from != to &&
                 (e->position().toPoint() - _headerDragStart).manhattanLength() >= 8) {
                 const auto oldTracks = *_file->tracks();
@@ -2830,7 +2856,7 @@ private:
         QString name;
         if (!useTrackName) {
             bool accepted = false;
-            const QString initial = targets.size() == 1 ? regionDisplayName(targets.front()) : QString();
+            const QString initial = targets.size() == 1 ? QString::fromStdString(targets.front().name) : QString();
             name = QInputDialog::getText(this, tr("Rename Region"), tr("Region name"),
                                         QLineEdit::Normal, initial, &accepted).trimmed();
             if (!accepted || name.isEmpty() || document != _file || !canEditQuantize()) return;
@@ -3050,6 +3076,9 @@ private:
     }
 
     xiv::RegionClipboard _regionClipboard;
+    std::vector<xiv::RegionClipboardItem> _regionGroupClipboard;
+    MidiTrack *_copiedTrackFocus = nullptr;
+    MidiTrack *_copiedTopTrack = nullptr;
     int _lastCopiedRegionId = 0;
     int _tutorialSnapTick = -1;
 
@@ -3060,9 +3089,22 @@ private:
 
     void copyRegion(int id) {
         auto snapshot = _regions;
-        if (!captureRegion(snapshot, id)) return;
-        const auto *region = snapshot.find(id);
-        _regionClipboard = {region->duration(), *region->ownedNotes, region->name, region->program};
+        const auto ids = _selectedRegionIds.count(id) ? _selectedRegionIds : std::set<int>{id};
+        int firstTick = std::numeric_limits<int>::max(), firstTrack = std::numeric_limits<int>::max();
+        for(int selected : ids) {
+            if(!captureRegion(snapshot, selected)) return;
+            const auto *r=snapshot.find(selected);
+            firstTick=std::min(firstTick,r->startTick); firstTrack=std::min(firstTrack,r->trackIndex);
+        }
+        std::vector<xiv::RegionClipboardItem> items;
+        for(int selected : ids) {
+            const auto *r=snapshot.find(selected);
+            items.push_back({r->trackIndex-firstTrack,r->startTick-firstTick,{r->duration(),*r->ownedNotes,r->name,r->program}});
+        }
+        _copiedTrackFocus = _selected;
+        _copiedTopTrack = _file->track(firstTrack);
+        _regionGroupClipboard=std::move(items);
+        _regionClipboard=_regionGroupClipboard.front().clip;
         _lastCopiedRegionId = id;
     }
 
@@ -3120,8 +3162,24 @@ private:
     }
 
     void pasteRegionAtPlayhead(int track) {
-        if (!_file) return;
-        insertRegion(track, _file->cursorTick(), _regionClipboard, tr("Paste Region"));
+        if (!_file || !canEditQuantize() || _regionGroupClipboard.empty()) return;
+        if (_regionGroupClipboard.size() > 1 && _file->tracks()->contains(_copiedTrackFocus) &&
+            _file->tracks()->contains(_copiedTopTrack) && _file->track(track) == _copiedTrackFocus)
+            track = _file->tracks()->indexOf(_copiedTopTrack);
+        std::vector<int> channels;
+        for(auto *t : *_file->tracks()) channels.push_back(t->assignedChannel());
+        auto draft=_regions;
+        const auto ids=xiv::pasteRegionGroup(draft,_regionGroupClipboard,track,_file->cursorTick(),channels);
+        if(ids.empty()) {
+            QToolTip::showText(QCursor::pos(),tr("Add enough destination tracks for the copied regions, then paste again."),this);
+            return;
+        }
+        auto *before=_regionHistory.copy();
+        _regions=std::move(draft);
+        setSelectedTrack(_file->track(track));
+        if(selectTrackRequested) selectTrackRequested(_file->track(track));
+        _selectedRegionId=ids.front(); _selectedRegionIds={ids.begin(),ids.end()};
+        finishRegionEdit(before,tr("Paste Regions"));
     }
 
     void insertRegion(int trackIndex, int tick, const xiv::RegionClipboard &clip,
@@ -3234,7 +3292,7 @@ private:
         finishRegionEdit(before, tr("Move Region"));
     }
 
-    // Every operation creates one undo step and updates the sidecar. Notes are
+    // Every operation creates one undo step and updates the project layout. Notes are
     // projected during playback/export; neither trim nor duplication edits
     // source MIDI note-on/off pairs.
     void finishRegionEdit(ProtocolEntry *before, const QString &description) {
@@ -3311,13 +3369,17 @@ private:
         finishRegionEdit(before, tr("Delete Region"));
     }
     void loadRegionLayout() {
-        if (!_file || _file->isStandaloneMidi() || _file->path().trimmed().isEmpty()) return;
-        QFile input(_file->path() + QStringLiteral(".xivms-regions.json"));
-        if (!input.exists() || !input.open(QIODevice::ReadOnly)) return;
-        QJsonParseError error;
-        const QJsonDocument doc = QJsonDocument::fromJson(input.readAll(), &error);
-        if (error.error != QJsonParseError::NoError || !doc.isObject()) return;
-        const QJsonObject root = doc.object();
+        if (!_file) return;
+        QJsonObject root = _file->projectRegions();
+        if (root.isEmpty()) {
+            if (_file->isStandaloneMidi() || _file->path().isEmpty()) return;
+            QFile input(_file->path() + QStringLiteral(".xivms-regions.json"));
+            if (!input.open(QIODevice::ReadOnly)) return;
+            QJsonParseError error;
+            const auto doc=QJsonDocument::fromJson(input.readAll(), &error);
+            if(error.error!=QJsonParseError::NoError || !doc.isObject()) return;
+            root=doc.object();
+        }
         const int version = root.value(QStringLiteral("version")).toInt();
         if (root.value(QStringLiteral("format")).toString() !=
                 QStringLiteral("XIV Midi Studio regions") ||

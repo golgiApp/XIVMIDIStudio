@@ -7,7 +7,7 @@
 #include <QWidget>
 
 namespace xiv {
-enum class ControlIcon { Height, Width, Volume, Muted };
+enum class ControlIcon { Height, Width, Volume, Muted, Eye, Hidden };
 
 // Vector geometry avoids source-encoding and installed-font dependencies.
 inline void paintControlIcon(QPainter &p, const QRect &rect, ControlIcon kind) {
@@ -23,12 +23,16 @@ inline void paintControlIcon(QPainter &p, const QRect &rect, ControlIcon kind) {
         p.drawLine(QPointF(0, -8), QPointF(0, 8));
         p.drawPolyline(QPolygonF{QPointF(-4, -4), QPointF(0, -8), QPointF(4, -4)});
         p.drawPolyline(QPolygonF{QPointF(-4, 4), QPointF(0, 8), QPointF(4, 4)});
+    } else if (kind == ControlIcon::Eye || kind == ControlIcon::Hidden) {
+        QPainterPath eye;
+        eye.moveTo(-9, 0); eye.quadTo(0, -11, 9, 0); eye.quadTo(0, 11, -9, 0);
+        p.drawPath(eye); p.drawEllipse(QPointF(0, 0), 2.5, 2.5);
+        if (kind == ControlIcon::Hidden) p.drawLine(QPointF(-8, 8), QPointF(8, -8));
     } else {
         p.drawPolygon(QPolygonF{QPointF(-9, -3), QPointF(-5, -3), QPointF(0, -7),
                               QPointF(0, 7), QPointF(-5, 3), QPointF(-9, 3)});
         if (kind == ControlIcon::Muted) {
-            p.drawLine(QPointF(4, -3), QPointF(9, 3));
-            p.drawLine(QPointF(4, 3), QPointF(9, -3));
+            p.drawLine(QPointF(-10, 9), QPointF(10, -9));
         } else {
             QPainterPath waves;
             waves.moveTo(4, -4); waves.quadTo(8, 0, 4, 4);

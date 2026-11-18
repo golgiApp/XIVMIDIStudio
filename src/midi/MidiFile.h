@@ -18,6 +18,7 @@
 
 #ifndef MIDIFILE_H_
 #define MIDIFILE_H_
+#include <QJsonObject>
 
 // Project includes
 #include "../protocol/ProtocolEntry.h"
@@ -117,6 +118,13 @@ public:
 
     // Save As writes the audible arrangement to one standard MIDI file.
     bool saveStandaloneMidi(const QString &path);
+    bool isProject() const { return _projectFile; }
+    QString sourcePath() const { return _sourcePath; }
+    void setSourcePath(const QString &path) { _sourcePath = path; }
+    QJsonObject projectRegions() const { return _projectRegions; }
+    void setProjectRegions(const QJsonObject &state) { _projectRegions = state; }
+    bool saveProject(const QString &path);
+    QByteArray serializeSourceMidi();
     QStringList unassignedNoteTrackNames() const;
     bool isStandaloneMidi() const { return _standaloneMidi; }
     bool saveArrangedMidi(QString path);
@@ -555,6 +563,9 @@ signals:
 private:
     bool writeArrangedMidi(const QString &path);
     bool _standaloneMidi = false;
+    bool _projectFile = false;
+    QString _sourcePath;
+    QJsonObject _projectRegions;
 
     // === File Reading Methods ===
 

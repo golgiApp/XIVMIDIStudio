@@ -47,6 +47,29 @@ inline int insertOwnedRegion(MidiRegionModel &model, int track, int start, int t
     return id;
 }
 
+struct RegionClipboardItem {
+    int trackOffset = 0;
+    int tickOffset = 0;
+    RegionClipboard clip;
+};
+// Validate the complete paste before committing any part of it.
+inline std::vector<int> pasteRegionGroup(MidiRegionModel &model,
+        const std::vector<RegionClipboardItem> &items, int track, int tick,
+        const std::vector<int> &channels) {
+    if (items.empty() || track < 0 || tick < 0) return {};
+    auto draft = model;
+    std::vector<int> ids;
+    for (const auto &item : items) {
+        const int64_t destination = int64_t(track) + item.trackOffset;
+        const int64_t start = int64_t(tick) + item.tickOffset;
+        if(destination < 0 || destination >= int64_t(channels.size()) || start < 0 || start > std::numeric_limits<int>::max()) return {};
+        int id = insertOwnedRegion(draft, int(destination), int(start), int(channels.size()), item.clip, channels[destination]);
+        if(!id) return {};
+        ids.push_back(id);
+    }
+    model=std::move(draft); return ids;
+}
+
 // Append clipboard notes without shifting any existing material.
 inline bool appendRegionNotesAtPlayhead(const MidiRegion &region, int playhead, int channel,
                                        const std::vector<OwnedRegionNote> &clipboard,

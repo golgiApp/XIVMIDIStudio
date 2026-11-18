@@ -1,3 +1,6 @@
+#include "../support/ProjectDocument.h"
+#include <QBuffer>
+#include <QJsonDocument>
 /*
  * MidiEditor
  * Copyright (C) 2010  Markus Schwenk
@@ -149,7 +152,23 @@ MidiFile::MidiFile(QString path, bool *ok, QStringList *log) {
         channels[i] = new MidiChannel(this, i);
     }
 
-    QDataStream *stream = new QDataStream(f);
+    QJsonObject project;
+    QByteArray midiBytes;
+    QBuffer embedded;
+    const bool openingProject = path.endsWith(".xivms", Qt::CaseInsensitive);
+    if (openingProject) {
+        QJsonParseError error;
+        const auto doc = QJsonDocument::fromJson(f->readAll(), &error);
+        project = doc.object();
+        if (error.error != QJsonParseError::NoError || project.value("format").toString() != "XIV MIDI Studio Project" ||
+            project.value("version").toInt() != 1 || !project.value("tracks").isArray()) {
+            *ok = false; delete f; if (deleteLog) delete log; return;
+        }
+        midiBytes = QByteArray::fromBase64(project.value("midi").toString().toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
+        if (!midiBytes.startsWith("MThd")) { *ok=false; delete f; if(deleteLog)delete log; return; }
+        embedded.setData(midiBytes); embedded.open(QIODevice::ReadOnly);
+    }
+    QDataStream *stream = new QDataStream(openingProject ? static_cast<QIODevice *>(&embedded) : f);
     stream->setByteOrder(QDataStream::BigEndian);
     if (!readMidiFile(stream, log)) {
         *ok = false;
@@ -165,6 +184,30 @@ MidiFile::MidiFile(QString path, bool *ok, QStringList *log) {
     delete stream; // Clean up stream
     delete f;
 
+    if (openingProject) {
+        const auto states = project.value("tracks").toArray();
+        xiv::MidiRegionModel layout;
+        if (states.size() != numTracks() || !xiv::decodeProjectRegions(project.value("regions").toObject(), numTracks(), layout)) {
+            *ok = false; if(deleteLog)delete log; return;
+        }
+        for (const auto &v : states) {
+            int ch=v.toObject().value("channel").toInt(-2);
+            if (!v.isObject() || ch < -1 || ch > 15) { *ok=false; if(deleteLog)delete log; return; }
+        }
+        for (int i=0; i<states.size(); ++i) {
+            const auto state=states[i].toObject(); auto *track=_tracks->at(i);
+            track->assignChannel(state.value("channel").toInt());
+            track->setMuted(state.value("muted").toBool()); track->setHidden(state.value("hidden").toBool());
+            const QColor color(state.value("color").toString()); if(color.isValid()) *track->color()=color;
+        }
+        _projectFile=true; _standaloneMidi=false;
+        _sourcePath=project.value("sourcePath").toString();
+        _projectRegions=project.value("regions").toObject(); setRegionLayout(layout);
+        _cursorTick=std::max(0,project.value("cursorTick").toInt());
+        const int solo=project.value("soloTrack").toInt(-1);
+        if(solo>=0 && solo<numTracks()) setSoloTrack(_tracks->at(solo));
+    } else _sourcePath=QFileInfo(path).absoluteFilePath();
+    _saved = true;
     *ok = true;
     playerMap = new QMultiMap<int, MidiEvent *>;
     calcMaxTime();
@@ -1738,18 +1781,36 @@ QStringList MidiFile::unassignedNoteTrackNames() const {
     return names;
 }
 
-bool MidiFile::save(QString path) {
-    if (!unassignedNoteTrackNames().isEmpty()) return false;
-    if (_standaloneMidi) return saveStandaloneMidi(path);
-    QFile *f = new QFile(path);
+bool MidiFile::save(QString path) { return saveProject(path); }
 
-    if (!f->open(QIODevice::WriteOnly)) {
-        return false;
+bool MidiFile::saveProject(const QString &path) {
+    if (!path.endsWith(".xivms", Qt::CaseInsensitive) || xiv::insideInstallFolder(path) ||
+        xiv::sameUserPath(path, _sourcePath)) return false;
+    xiv::MidiRegionModel validated;
+    if (!xiv::decodeProjectRegions(_projectRegions, numTracks(), validated)) return false;
+    QJsonArray tracks;
+    for (auto *track : *_tracks) {
+        QJsonObject row;
+        row.insert("channel", track->assignedChannel());
+        row.insert("muted", track->muted()); row.insert("hidden", track->hidden());
+        row.insert("color", track->color()->name(QColor::HexArgb));
+        tracks.append(row);
     }
+    QJsonObject root;
+    root.insert("format", "XIV MIDI Studio Project"); root.insert("version", 1);
+    root.insert("sourcePath", _sourcePath); root.insert("regions", _projectRegions);
+    root.insert("tracks", tracks); root.insert("cursorTick", _cursorTick);
+    root.insert("soloTrack", _tracks->indexOf(soloTrack()));
+    root.insert("midi", QString::fromLatin1(serializeSourceMidi().toBase64()));
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly)) return false;
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    if (output.write(bytes) != bytes.size() || !output.commit()) return false;
+    _path = path; _projectFile = true; _saved = true;
+    return true;
+}
 
-    QDataStream *stream = new QDataStream(f);
-    stream->setByteOrder(QDataStream::BigEndian);
-
+QByteArray MidiFile::serializeSourceMidi() {
     // All Events are stored in allEvents. This is because the data has to be
     // saved by tracks and not by channels
     QMultiMap<int, MidiEvent *> allEvents = QMultiMap<int, MidiEvent *>();
@@ -1842,30 +1903,16 @@ bool MidiFile::save(QString path) {
         }
     }
 
-    // write data to the filestream
-    for (int i = 0; i < data.size(); i++) {
-        (*stream) << (qint8) (data.at(i));
-    }
-
-    // close the file
-    f->close();
-
-    _saved = true;
-
-    return true;
+    return data;
 }
 
 bool MidiFile::saveArrangedMidi(QString path) {
-    if (path.isEmpty() || (QFileInfo(path).absoluteFilePath() ==
-                           QFileInfo(_path).absoluteFilePath())) return false;
+    if (path.isEmpty() || xiv::sameUserPath(path, _path) || xiv::sameUserPath(path, _sourcePath) || xiv::insideInstallFolder(path)) return false;
     return writeArrangedMidi(path);
 }
 
 bool MidiFile::saveStandaloneMidi(const QString &path) {
-    if (!writeArrangedMidi(path)) return false;
-    _standaloneMidi = true;
-    _saved = true;
-    return true;
+    return saveArrangedMidi(path);
 }
 
 bool MidiFile::writeArrangedMidi(const QString &path) {
