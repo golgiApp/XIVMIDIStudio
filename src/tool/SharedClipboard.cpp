@@ -3,6 +3,7 @@
  * Copyright (C) 2026. GPL-3.0-or-later, as with MidiEditor.
  */
 #include "SharedClipboard.h"
+#include "../gui/RegionClipboardIO.h"
 #include "../MidiEvent/MidiEvent.h"
 #include "../MidiEvent/NoteOnEvent.h"
 #include "../MidiEvent/OffEvent.h"
@@ -121,9 +122,7 @@ bool SharedClipboard::copyEvents(const QList<MidiEvent *> &events, MidiFile *sou
     payload.append(data.mid(sizeof(quint32) + sizeof(quint16) + sizeof(qint64)
                             + sizeof(quint32) + sizeof(quint32)));
     if (payload.size() > kMaxPayload) return false;
-    auto *mime = new QMimeData();
-    mime->setData(MIME_TYPE, payload);
-    QApplication::clipboard()->setMimeData(mime); // Ownership transferred.
+    xiv::setClipboardPayload(MIME_TYPE, payload);
     return true;
 }
 

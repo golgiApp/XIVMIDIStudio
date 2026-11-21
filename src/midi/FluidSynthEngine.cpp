@@ -22,6 +22,10 @@
 #include "FluidSynthEngine.h"
 
 #include <fluidsynth.h>
+#include "PerformanceVoiceEstimate.h"
+#include "PreviewAudio.h"
+#include <set>
+#include <vector>
 
 #include <QDebug>
 #include <QCoreApplication>
@@ -42,6 +46,21 @@
 FluidSynthEngine* FluidSynthEngine::instance() {
     static FluidSynthEngine engine;
     return &engine;
+}
+
+// Each SoundFont layer for a note shares its note-on ID. Keep release tails,
+// but collapse layers/stereo samples into one estimated performance voice.
+int FluidSynthEngine::renderAudio(void *data,int len,int nfx,float *fx[],int nout,float *out[]) {
+    auto *engine=static_cast<FluidSynthEngine*>(data);
+    // No application mutex here: shutdown holds it while joining the driver.
+    return xiv::renderPreviewAudio(engine->_synth,len,nfx,fx,nout,out,
+                                  engine->_playbackVolume.load(std::memory_order_relaxed));
+}
+
+int FluidSynthEngine::estimatedPerformanceVoices() const {
+    QMutexLocker lock(&_engineMutex);
+    if (!_initialized || !_synth) return 0;
+    return xiv::estimatedVoiceCount(_synth, _metronomeVoices);
 }
 
 FluidSynthEngine::FluidSynthEngine()
@@ -88,7 +107,7 @@ bool FluidSynthEngine::initialize() {
     if (!_audioDriverName.isEmpty()) {
         fluid_settings_setstr(_settings, "audio.driver", _audioDriverName.toUtf8().constData());
     }
-    fluid_settings_setnum(_settings, "synth.gain", _gain * _playbackVolume);
+    fluid_settings_setnum(_settings, "synth.gain", _gain);
     fluid_settings_setnum(_settings, "synth.sample-rate", _sampleRate);
     fluid_settings_setint(_settings, "synth.reverb.active", _reverbEnabled ? 1 : 0);
     fluid_settings_setint(_settings, "synth.chorus.active", _chorusEnabled ? 1 : 0);
@@ -102,6 +121,7 @@ bool FluidSynthEngine::initialize() {
     fluid_settings_setint(_settings, "synth.dynamic-sample-loading", 1);
 
     // Create the synthesizer
+    _metronomeVoices.clear();
     _synth = new_fluid_synth(_settings);
     if (!_synth) {
         delete_fluid_settings(_settings);
@@ -111,7 +131,7 @@ bool FluidSynthEngine::initialize() {
     }
 
     // Create the audio driver
-    _audioDriver = new_fluid_audio_driver(_settings, _synth);
+    _audioDriver = new_fluid_audio_driver2(_settings, &FluidSynthEngine::renderAudio, this);
     if (!_audioDriver) {
         delete_fluid_synth(_synth);
         _synth = nullptr;
@@ -394,6 +414,13 @@ void FluidSynthEngine::setSoundFontStack(const QStringList &paths) {
 // ============================================================================
 // MIDI Message Routing
 // ============================================================================
+
+void FluidSynthEngine::sendMetronomeData(const QByteArray &data) {
+    QMutexLocker lock(&_engineMutex);
+    if(!_initialized || !_synth) return;
+    const auto before=xiv::soundingNoteIds(_synth); sendMidiData(data);
+    for(auto id:xiv::soundingNoteIds(_synth)) if(!before.count(id)) _metronomeVoices.insert(id);
+}
 
 void FluidSynthEngine::sendMidiData(const QByteArray &data) {
     QMutexLocker locker(&_engineMutex);
@@ -874,7 +901,7 @@ void FluidSynthEngine::setAudioDriver(const QString &driver) {
         // Driver hot-swap: destroy audio driver and recreate WITHOUT destroying synth or soundfonts
         delete_fluid_audio_driver(_audioDriver);
         fluid_settings_setstr(_settings, "audio.driver", driver.toUtf8().constData());
-        _audioDriver = new_fluid_audio_driver(_settings, _synth);
+        _audioDriver = new_fluid_audio_driver2(_settings, &FluidSynthEngine::renderAudio, this);
         if (!_audioDriver) {
             qWarning() << "FluidSynth: Failed to switch to audio driver" << driver;
         } else {
@@ -887,14 +914,14 @@ void FluidSynthEngine::setAudioDriver(const QString &driver) {
 void FluidSynthEngine::setPlaybackVolume(double volume) {
     QMutexLocker locker(&_engineMutex);
     _playbackVolume = qBound(0.0, volume, 1.0);
-    if (_initialized && _synth) fluid_synth_set_gain(_synth, static_cast<float>(_gain * _playbackVolume));
+    // Fader is applied to output samples by renderAudio, never to synth gain.
 }
 
 void FluidSynthEngine::setGain(double gain) {
     QMutexLocker locker(&_engineMutex);
     _gain = gain;
     if (_initialized && _synth) {
-        fluid_synth_set_gain(_synth, static_cast<float>(gain * _playbackVolume));
+        fluid_synth_set_gain(_synth, static_cast<float>(gain));
     }
     save(); // Persist immediately
 }

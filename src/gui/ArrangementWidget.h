@@ -12,6 +12,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include "TrackInstrumentIcon.h"
+#include "RegionClipboardIO.h"
+#include "../region/ProjectedRegionEdits.h"
+#include "../region/RegionForceLegato.h"
 #include <QMouseEvent>
 #include <QHoverEvent>
 #include <QContextMenuEvent>
@@ -49,6 +52,7 @@
 #include "TimeSignatureDialog.h"
 #include "../MidiEvent/TimeSignatureEvent.h"
 #include "../midi/TempoMapEdit.h"
+#include "../midi/TempoClipboard.h"
 #include <QRadioButton>
 #include <QButtonGroup>
 #include <QVBoxLayout>
@@ -139,6 +143,34 @@ public:
     std::function<int()> chordVoiceTolerance;
     std::function<void(int)> positionChanged;
     const xiv::MidiRegionModel &regionModel() const { return _regions; }
+    bool copySelectedMaterial() {
+        if (_tempoFocus) { copyTempoPoints(); return true; }
+        if (!_selectedRegionId) return false;
+        copyRegion(_selectedRegionId); return true;
+    }
+    bool pasteSelectedMaterial() {
+        if (_tempoFocus) { pasteTempoPoints(); return true; }
+        if (!_selected || !_file) return false;
+        pasteRegionAtPlayhead(_file->tracks()->indexOf(_selected)); return true;
+    }
+    void filterTrackRegions(MidiTrack *track, int mode) {
+        if(!_file || !canEditQuantize() || mode<0 || mode>5) return;
+        std::set<int> ids;
+        const int index=_file->tracks()->indexOf(track);
+        for(const auto &r:_regions.regions()) if(r.trackIndex==index) ids.insert(r.id);
+        filterRegions(ids,static_cast<FfxivVoice::Mode>(mode));
+    }
+    QStringList outOfRangeTracks() const {
+        if (!_file) return {};
+        std::set<int> ids, tracks;
+        for(const auto &r:_regions.regions()) ids.insert(r.id);
+        for(const auto &n:xiv::renderRegionNotes(sourceNotesFor(ids),_regions))
+            if(n.pitch<48 || n.pitch>84) tracks.insert(n.trackIndex);
+        QStringList result;
+        for(int index:tracks) result << tr("Track %1: %2").arg(index+1).arg(_file->track(index)->name());
+        return result;
+    }
+
     MidiFile *midiFile() const { return _file.data(); }
     int selectedRegionId() const { return _selectedRegionId; }
     std::set<int> selectedRegionIds() const {
@@ -420,6 +452,7 @@ public:
         _sections.clear();
         _tempoSelected = -1;
         _tempoDrag = TempoDrag::None;
+        _tempoFocus=false; _tempoSelection.clear(); _tempoBoxActive=false; _marquee=false;
         _sectionPressed = false;
         pendingNoteSelection = {};
         _regionsReady = false;
@@ -733,7 +766,7 @@ protected:
         if (e->type() == QEvent::ShortcutOverride) {
             const auto *key = static_cast<QKeyEvent *>(e);
             if ((_selectedRegionId && isSplitShortcut(key)) || isJoinShortcut(key) ||
-                regionClipboardShortcut(key) ||
+                tempoClipboardShortcut(key) || regionClipboardShortcut(key) ||
                 (_selectedRegionId && regionOctaveShift(key) != 0) ||
                 (isDeleteShortcut(key) &&
                  (_tempoSelected >= 0 || _selectedRegionId || (_trackHeaderSelected && _selected)))) {
@@ -745,6 +778,10 @@ protected:
     }
 
     void keyPressEvent(QKeyEvent *e) override {
+        if(tempoClipboardShortcut(e)) {
+            if(matchesCommand(e,QStringLiteral("copy"))) copyTempoPoints(); else pasteTempoPoints();
+            e->accept(); return;
+        }
         if (isDeleteShortcut(e) &&
             _tempoSelected >= 0 && _showGlobalTracks && canEditQuantize()) {
             if (!e->isAutoRepeat()) deleteSelectedTempoPoint();
@@ -1103,6 +1140,13 @@ protected:
         // top of every lane's regions/notes (including at time zero).
         p.setPen(QColor("#515966"));
         p.drawLine(headerWidth, 0, headerWidth, height());
+        if (_tempoBoxActive) {
+            p.save(); p.setPen(QColor("#9DCCF0")); p.setBrush(QColor(120,177,230,45)); p.drawRect(_tempoBox); p.restore();
+        }
+        if (_marquee) {
+            p.save(); p.setPen(QColor("#9DCCF0")); p.setBrush(QColor(120,177,230,45));
+            p.drawRect(_marqueeRect); p.restore();
+        }
         const int ms = _playheadMs >= 0 ? _playheadMs : _file->msOfTick(_file->cursorTick());
         const int x = xForMs(ms);
         if (x >= headerWidth && x < width()) {
@@ -1171,18 +1215,30 @@ protected:
         if (inTempoLane(e->pos()) && e->pos().x() >= headerWidth && canEditQuantize()) {
             auto points = xiv::readTempoMap(_file);
             const auto [kind, tick] = tempoHit(points, e->pos());
+            _tempoFocus=true;
             if (kind == TempoDrag::Point) {
+                if(!_tempoSelection.count(tick)) _tempoSelection={tick};
                 _tempoSelected = tick;
                 setFocus(Qt::MouseFocusReason);
                 update();
                 QMenu menu(this);
+                auto *copy = menu.addAction(tr("Copy Tempo Points"));
+                auto *paste = menu.addAction(tr("Paste Tempo Points at Playhead"));
+                paste->setEnabled(QApplication::clipboard()->mimeData()->hasFormat(tempoMime));
                 auto *edit = menu.addAction(tr("Edit BPM…"));
                 auto *remove = menu.addAction(withShortcut(
                     tr("Delete Tempo Point"), QStringLiteral("xiv_arrangement_delete")));
-                remove->setEnabled(tick > 0);
+                remove->setEnabled(std::any_of(_tempoSelection.begin(),_tempoSelection.end(),[](int t){return t>0;}));
                 const auto *chosen = menu.exec(e->globalPos());
-                if (chosen == edit) editTempoHit(e->pos());
+                if (chosen == copy) copyTempoPoints();
+                else if (chosen == paste) pasteTempoPoints();
+                else if (chosen == edit) editTempoHit(e->pos());
                 else if (chosen == remove) deleteSelectedTempoPoint();
+            } else {
+                QMenu menu(this);
+                auto *paste=menu.addAction(tr("Paste Tempo Points at Playhead"));
+                paste->setEnabled(QApplication::clipboard()->mimeData()->hasFormat(tempoMime));
+                if(menu.exec(e->globalPos())==paste) pasteTempoPoints();
             }
             e->accept();
             return;
@@ -1210,7 +1266,7 @@ protected:
                 QMenu menu(this);
                 auto *copy = menu.addAction(withShortcut(tr("Copy Region"), QStringLiteral("copy")));
                 auto *paste = menu.addAction(withShortcut(tr("Paste Region at Playhead"), QStringLiteral("paste")));
-                paste->setEnabled(_regionClipboard.duration > 0 && canEditQuantize());
+                paste->setEnabled(!xiv::systemRegionClipboard(_file->ticksPerQuarter()).empty() && canEditQuantize());
                 menu.addSeparator();
                 QAction *join = menu.addAction(withShortcut(
                     tr("Join Selected Regions Here"), QStringLiteral("xiv_join_regions")));
@@ -1272,7 +1328,7 @@ protected:
                 auto *create = menu.addAction(tr("Add Empty Region Here"));
                 create->setEnabled(canEditQuantize() && emptyRegionDuration(row, createTick) > 0);
                 auto *paste = menu.addAction(withShortcut(tr("Paste Region at Playhead"), QStringLiteral("paste")));
-                paste->setEnabled(_regionClipboard.duration > 0 && canEditQuantize());
+                paste->setEnabled(!xiv::systemRegionClipboard(_file->ticksPerQuarter()).empty() && canEditQuantize());
                 QAction *chosen = menu.exec(e->globalPos());
                 if (chosen == create) addEmptyRegion(row, createTick);
                 else if (chosen == paste) pasteRegionAtPlayhead(row);
@@ -1331,6 +1387,9 @@ protected:
     }
 
     void mousePressEvent(QMouseEvent *e) override {
+        _tempoFocus=inTempoLane(e->position().toPoint());
+        if(!_tempoFocus) _tempoSelection.clear();
+
         if (!_file || e->button() != Qt::LeftButton) {
             QWidget::mousePressEvent(e);
             return;
@@ -1371,7 +1430,22 @@ protected:
                     if (pos.x() < headerWidth) {
                         if (globalAddRect(tempoTop()).contains(QPoint(pos.x(), headerY)))
                             addTempoPoint(_file->cursorTick());
-                    } else beginTempoDrag(pos);
+                    } else {
+                        setFocus(Qt::MouseFocusReason);
+                        const auto points=xiv::readTempoMap(_file);
+                        const auto [kind,tick]=tempoHit(points,pos);
+                        const bool add=bool(e->modifiers() & (Qt::ShiftModifier|Qt::ControlModifier));
+                        if(kind==TempoDrag::Point) {
+                            if(add) {
+                                if(_tempoSelection.count(tick)) _tempoSelection.erase(tick); else _tempoSelection.insert(tick);
+                                _tempoSelected=_tempoSelection.empty()?-1:*_tempoSelection.begin(); update();
+                            } else { _tempoSelection={tick}; beginTempoDrag(pos); }
+                        } else if(kind==TempoDrag::Corner) beginTempoDrag(pos);
+                        else {
+                            _tempoBoxActive=true; _tempoBoxStart=pos; _tempoBox=QRect(pos,pos);
+                            _tempoBoxBase=add?_tempoSelection:std::set<int>{};
+                        }
+                    }
                 }
                 e->accept();
                 return;
@@ -1392,8 +1466,7 @@ protected:
         } else {
             _tempoSelected = -1;
         }
-        if ((e->modifiers().testFlag(Qt::ShiftModifier) ||
-             e->modifiers().testFlag(Qt::ControlModifier)) && canEditQuantize() &&
+        if (e->modifiers().testFlag(Qt::ShiftModifier) && canEditQuantize() &&
             pos.x() >= headerWidth && isLaneY(pos.y())) {
             const int row = (pos.y() - rulerHeight()) / laneHeight;
             if (row >= 0 && row < _file->numTracks() && !hitRegion(row, pos.x())) {
@@ -1525,7 +1598,13 @@ protected:
                 return;
             }
         }
-        // Defer lane deselection until release to distinguish panning.
+        if (pos.x() >= headerWidth && pos.y() >= rulerHeight()) {
+            setFocus(Qt::MouseFocusReason);
+            _marquee = true; _marqueeStart = pos; _marqueeRect = QRect(pos, pos);
+            _marqueeBase = (e->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)) ? _selectedRegionIds : std::set<int>{};
+            e->accept(); return;
+        }
+        // Panning remains available from the ruler and horizontal scrollbar.
         if (pos.x() >= headerWidth) {
             _timelinePressed = true;
             _dragging = false;
@@ -1539,6 +1618,29 @@ protected:
     }
 
     void mouseMoveEvent(QMouseEvent *e) override {
+        if(_tempoBoxActive) {
+            _tempoBox=QRect(_tempoBoxStart,e->position().toPoint()).normalized();
+            _tempoSelection=_tempoBoxBase;
+            const auto points=xiv::readTempoMap(_file); const auto [lo,hi]=tempoScale(points);
+            for(auto it=points.begin();it!=points.end();++it)
+                if(_tempoBox.contains(QPoint(xForMs(_file->msOfTick(it.key())),_rulerTop+tempoY(it.value().bpm(),lo,hi)))) _tempoSelection.insert(it.key());
+            _tempoSelected=_tempoSelection.empty()?-1:*_tempoSelection.begin();
+            update(); e->accept(); return;
+        }
+        if (_marquee) {
+            _marqueeRect = QRect(_marqueeStart, e->position().toPoint()).normalized();
+            _selectedRegionIds = _marqueeBase;
+            for (const auto &r : _regions.regions()) {
+                QRect bounds(xForMs(_file->msOfTick(r.startTick)), rulerHeight()+r.trackIndex*laneHeight+6,
+                    std::max(1,xForMs(_file->msOfTick(r.endTick()))-xForMs(_file->msOfTick(r.startTick))),laneHeight-12);
+                if (_marqueeRect.intersects(bounds)) _selectedRegionIds.insert(r.id);
+            }
+            _selectedRegionId = _selectedRegionIds.empty()?0:*_selectedRegionIds.begin();
+            _trackHeaderSelected = false;
+            if (_selectedRegionId) setSelectedTrack(_file->track(_regions.find(_selectedRegionId)->trackIndex));
+            if (regionViewChanged) regionViewChanged();
+            update(); e->accept(); return;
+        }
         if (_headerDragRow >= 0 && (e->buttons() & Qt::LeftButton)) {
             _headerDragPosition = e->position().toPoint();
             setCursor(Qt::ClosedHandCursor);
@@ -1566,7 +1668,7 @@ protected:
             !_regionPressed && _cycleDrag == CycleDrag::None) {
             const auto points = xiv::readTempoMap(_file);
             const auto [kind, tick] = tempoHit(points, pos);
-            setCursor(kind == TempoDrag::None ? Qt::CrossCursor : Qt::SizeAllCursor);
+            setCursor(Qt::ArrowCursor);
             if (kind == TempoDrag::Corner) {
                 QToolTip::showText(e->globalPosition().toPoint(),
                     points.value(tick).rampToNext
@@ -1580,7 +1682,7 @@ protected:
         }
         if (inSectionLane(pos) && !_timelinePressed && !_regionPressed &&
             _cycleDrag == CycleDrag::None) {
-            setCursor(sectionAt(pos.x()) >= 0 ? Qt::OpenHandCursor : Qt::CrossCursor);
+            setCursor(sectionAt(pos.x()) >= 0 ? Qt::OpenHandCursor : Qt::ArrowCursor);
             QToolTip::showText(e->globalPosition().toPoint(),
                 tr("Drag empty space to name a section. Drag a section to move its regions. Right-click to rename or delete."),
                 this);
@@ -1595,7 +1697,7 @@ protected:
         if (inCycleStrip(pos) && !_timelinePressed && !_regionPressed) {
             const auto hit = cycleHit(pos.x());
             setCursor(hit == CycleDrag::Left || hit == CycleDrag::Right
-                ? Qt::SizeHorCursor : hit == CycleDrag::Move ? Qt::OpenHandCursor : Qt::CrossCursor);
+                ? Qt::SizeHorCursor : hit == CycleDrag::Move ? Qt::OpenHandCursor : Qt::ArrowCursor);
             QToolTip::showText(e->globalPosition().toPoint(),
                 tr("Cycle playback: drag to draw or move the range, drag an edge to resize, click the ribbon to toggle."),
                 this);
@@ -1674,14 +1776,14 @@ protected:
                 const bool edge = (left >= headerWidth && std::abs(pos.x()-left) <= 8) ||
                                   (right < width() && std::abs(pos.x()-right) <= 8);
                 if (loopHandle) setCursor(loopCursor());
-                else setCursor(edge ? Qt::SizeHorCursor : Qt::SizeAllCursor);
+                else setCursor(edge ? Qt::SizeHorCursor : Qt::ArrowCursor);
                 if (loopHandle) QToolTip::showText(e->globalPosition().toPoint(),
                               tr("Drag to loop this region; release for a partial repeat"), this);
                 else if (edge) QToolTip::showText(e->globalPosition().toPoint(),
                               tr("Drag edge to trim; Ctrl+drag inside to duplicate"), this);
                 else QToolTip::showText(e->globalPosition().toPoint(),
                               tr("Drag to move; Ctrl+drag to duplicate"), this);
-            } else setCursor(Qt::OpenHandCursor);
+            } else setCursor(Qt::ArrowCursor);
         } else if (inPlayheadRuler(pos) && !MidiInput::recording()) {
             setCursor(Qt::OpenHandCursor);
             QToolTip::showText(e->globalPosition().toPoint(), tr("Click or drag to move the playhead"), this);
@@ -1694,6 +1796,17 @@ protected:
     }
 
     void mouseReleaseEvent(QMouseEvent *e) override {
+        if(_tempoBoxActive && e->button()==Qt::LeftButton) {
+            _tempoBoxActive=false;
+            if((_tempoBoxStart-e->position().toPoint()).manhattanLength()<QApplication::startDragDistance()) {
+                _tempoSelection.clear(); beginTempoDrag(e->position().toPoint());
+            }
+            _tempoBox={}; update(); e->accept(); return;
+        }
+        if (_marquee && e->button()==Qt::LeftButton) {
+            if ((_marqueeStart-e->position().toPoint()).manhattanLength()<QApplication::startDragDistance()) clearRegionSelection();
+            _marquee=false; _marqueeRect={}; update(); e->accept(); return;
+        }
         if (_headerDragRow >= 0) {
             const int from = _headerDragRow;
             _headerDragRow = -1;
@@ -2065,6 +2178,30 @@ private:
         update();
     }
 
+    bool _tempoFocus = false, _tempoBoxActive = false;
+    QPoint _tempoBoxStart;
+    QRect _tempoBox;
+    std::set<int> _tempoSelection, _tempoBoxBase;
+    static constexpr auto tempoMime = "application/x-xivms-tempo-v1";
+    bool tempoClipboardShortcut(const QKeyEvent *e) const {
+        return _tempoFocus && (matchesCommand(e,QStringLiteral("copy")) || matchesCommand(e,QStringLiteral("paste")));
+    }
+    void copyTempoPoints() {
+        if (!_file || _tempoSelection.empty()) return;
+        xiv::setClipboardPayload(tempoMime, xiv::encodeTempoClipboard(
+            xiv::readTempoMap(_file), _tempoSelection, _file->ticksPerQuarter()));
+    }
+    void pasteTempoPoints() {
+        if(!_file || MidiPlayer::isPlaying() || !canEditQuantize()) return;
+        const auto *mime=QApplication::clipboard()->mimeData(); if(!mime) return;
+        auto points=xiv::readTempoMap(_file);
+        auto selected=xiv::pasteTempoClipboard(mime->data(tempoMime),_file->ticksPerQuarter(),
+            _file->cursorTick(),_file->track(0),points);
+        if(selected.empty()) return;
+        xiv::writeTempoMap(_file,points,tr("Paste Tempo Points"));
+        _tempoSelection=std::move(selected); _tempoSelected=*_tempoSelection.begin(); update();
+    }
+
     enum class TempoDrag { None, Point, Corner };
     TempoDrag _tempoDrag = TempoDrag::None;
     xiv::TempoMap _tempoDraft;
@@ -2212,7 +2349,7 @@ private:
                 }
                 p.fillRect(QRect(corner - QPoint(3, 3), QSize(7, 7)), QColor("#A4BC88"));
             }
-            p.fillRect(QRect(x - 4, y - 4, 9, 9), point.key() == _tempoSelected
+            p.fillRect(QRect(x - 4, y - 4, 9, 9), (_tempoSelection.count(point.key()) || point.key() == _tempoSelected)
                        ? QColor("#FFD386") : QColor("#72C5C0"));
             p.setPen(QColor("#CDE2F4"));
             p.drawText(x + 6, y - 4, QString::number(point.value().bpm(), 'f', 1));
@@ -2256,14 +2393,17 @@ private:
     }
     void deleteSelectedTempoPoint() {
         if (MidiPlayer::isPlaying()) return;
-        if (!canEditQuantize() || _tempoSelected <= 0) return;
+        if (!canEditQuantize() || _tempoSelected < 0) return;
         auto points = xiv::readTempoMap(_file);
-        auto point = points.find(_tempoSelected);
-        if (point == points.end()) return;
-        std::prev(point).value().rampToNext = false;
-        points.erase(point);
-        _tempoSelected = -1;
-        xiv::writeTempoMap(_file, points, tr("Delete Tempo Point"));
+        auto selected=_tempoSelection;
+        if(selected.empty()) selected.insert(_tempoSelected);
+        for(int tick:selected) {
+            auto point=points.find(tick); if(point==points.end() || tick==0) continue;
+            if(point!=points.begin()) std::prev(point).value().rampToNext=false;
+            points.erase(point);
+        }
+        _tempoSelected=-1; _tempoSelection.clear();
+        xiv::writeTempoMap(_file,points,tr("Delete Tempo Points"));
     }
     void addTempoPoint(int tick) {
         if (MidiPlayer::isPlaying()) return;
@@ -2273,6 +2413,7 @@ private:
             xiv::writeTempoMap(_file, points, tr("Add Tempo Point"));
         }
         _tempoSelected = tick;
+        _tempoSelection={tick};
         update();
     }
     void beginTempoDrag(const QPoint &pos) {
@@ -2336,6 +2477,7 @@ private:
             _tempoDraft.erase(point);
             _tempoDraft.insert(tick, value);
             _tempoSelected = tick;
+            _tempoSelection={tick};
         }
         update();
     }
@@ -2367,6 +2509,7 @@ private:
             if (!ok || _file != document || !canEditQuantize()) return;
             points[tick].setBpm(bpm);
             _tempoSelected = tick;
+            _tempoSelection={tick};
         }
         xiv::writeTempoMap(_file, points, tr("Edit Tempo Point"));
     }
@@ -2916,6 +3059,29 @@ private:
         if (changed) installRegionNoteEdit(std::move(updated), tr("Rename Regions"));
     }
 
+    void adjustRegionEnds(bool overlaps) {
+        auto updated = _regions;
+        bool changed = false;
+        for (int id : _selectedRegionIds) {
+            if (!captureRegion(updated,id)) return;
+            const auto *r=updated.find(id);
+            auto notes=*r->ownedNotes;
+            std::vector<xiv::RenderedRegionNote> projected;
+            std::set<int> selected;
+            for (const auto &n:notes) {
+                xiv::RenderedRegionNote v; v.ownedNoteId=n.id;
+                v.sourceSliceStartTick=n.startTick; v.sourceSliceEndTick=n.endTick;
+                projected.push_back(v); selected.insert(n.id);
+            }
+            if (xiv::adjustRegionNoteEnds(notes,projected,selected,r->sourceEndTick,
+                    overlaps?xiv::RegionNoteEndMode::RemoveOverlap:xiv::RegionNoteEndMode::Legato)) {
+                if (!updated.replaceOwnedNotes(id,std::move(notes))) return;
+                changed=true;
+            }
+        }
+        if(changed) installRegionNoteEdit(std::move(updated),overlaps?tr("Remove Overlaps"):tr("Force Legato"));
+    }
+
     void addRegionNoteActions(QMenu &menu, int id) {
         const bool editable = canEditQuantize();
         auto add = [&](QMenu &parent, const QString &name, auto handler) {
@@ -2934,17 +3100,18 @@ private:
         add(menu, tr("Explode Region Chords to Tracks"), [this, id]() {
             distributeRegionNotes(id, false);
         });
+        add(menu, tr("Remove Overlaps (8 Ticks)"), [this]() { adjustRegionEnds(true); });
+        add(menu, tr("Force Legato"), [this]() { adjustRegionEnds(false); });
         QMenu *filter = menu.addMenu(tr("Chord Voice Filter (FFXIV)"));
         filter->setEnabled(editable);
         add(*filter, tr("Keep Highest Voice"), [this, id]() {
             filterRegionChords(id, FfxivVoice::Mode::KeepHighest);
         });
-        add(*filter, tr("Keep Lowest Voice"), [this, id]() {
-            filterRegionChords(id, FfxivVoice::Mode::KeepLowest);
-        });
-        add(*filter, tr("Keep Inner Voices"), [this, id]() {
-            filterRegionChords(id, FfxivVoice::Mode::KeepInner);
-        });
+        add(*filter, tr("Keep Inner Voices"), [this, id]() { filterRegionChords(id, FfxivVoice::Mode::KeepInner); });
+        add(*filter, tr("Keep Lowest Voice"), [this, id]() { filterRegionChords(id, FfxivVoice::Mode::KeepLowest); });
+        add(*filter, tr("Remove Highest Note Only"), [this, id]() { filterRegionChords(id, FfxivVoice::Mode::RemoveHighest); });
+        add(*filter, tr("Remove Inner Notes Only"), [this, id]() { filterRegionChords(id, FfxivVoice::Mode::RemoveInner); });
+        add(*filter, tr("Remove Lowest Note Only"), [this, id]() { filterRegionChords(id, FfxivVoice::Mode::RemoveLowest); });
         add(menu, tr("Split Region Channels to Tracks"), [this, id]() {
             distributeRegionNotes(id, true);
         });
@@ -3002,25 +3169,32 @@ private:
         installRegionNoteEdit(std::move(updated), tr("Transpose Region"));
     }
 
-    void filterRegionChords(int id, FfxivVoice::Mode mode) {
-        if (!canEditQuantize()) return;
-        auto updated = _regions;
-        if (!captureRegion(updated, id)) return;
-        const auto *region = updated.find(id);
-        const auto name = _file->tracks()->at(region->trackIndex)->name().toStdString();
-        auto notes = *region->ownedNotes;
+    void filterRegionChords(int id, FfxivVoice::Mode mode) { filterRegions({id},mode); }
+    void filterRegions(const std::set<int> &ids, FfxivVoice::Mode mode) {
+        if(!canEditQuantize() || ids.empty()) return;
+        auto updated=_regions;
         std::vector<FfxivVoice::Note> voices;
-        for (const auto &note : notes)
-            voices.push_back({static_cast<std::uint64_t>(note.id), region->trackIndex,
-                              note.channel, note.pitch, note.startTick, name, note.endTick});
-        const auto removed = FfxivVoice::deletionIds(voices, mode,
-            chordVoiceTolerance ? chordVoiceTolerance() : 0, true);
-        if (removed.empty()) return;
-        notes.erase(std::remove_if(notes.begin(), notes.end(), [&](const auto &note) {
-            return removed.count(static_cast<std::uint64_t>(note.id)) != 0;
-        }), notes.end());
-        if (!updated.replaceOwnedNotes(id, std::move(notes))) return;
-        installRegionNoteEdit(std::move(updated), tr("Filter Region Chord Voices"));
+        std::map<std::pair<int,int>,std::uint64_t> handles;
+        std::uint64_t next=1;
+        for(int id:ids) {
+            if(!captureRegion(updated,id)) return;
+            const auto *region=updated.find(id);
+            const auto name=_file->track(region->trackIndex)->name().toStdString();
+            for(const auto &note:*region->ownedNotes) {
+                const auto handle=next++; handles[{id,note.id}]=handle;
+                voices.push_back({handle,region->trackIndex,note.channel,note.pitch,
+                    note.startTick+region->startTick-region->sourceStartTick,name,
+                    note.endTick+region->startTick-region->sourceStartTick});
+            }
+        }
+        const auto removed=FfxivVoice::deletionIds(voices,mode,chordVoiceTolerance?chordVoiceTolerance():0,true);
+        if(removed.empty()) return;
+        for(int id:ids) {
+            auto notes=*updated.find(id)->ownedNotes;
+            notes.erase(std::remove_if(notes.begin(),notes.end(),[&](const auto &n){return removed.count(handles.at({id,n.id}));}),notes.end());
+            if(!updated.replaceOwnedNotes(id,std::move(notes))) return;
+        }
+        installRegionNoteEdit(std::move(updated),tr("Filter Chord Voices"));
     }
 
     void distributeRegionNotes(int id, bool byChannel) {
@@ -3108,6 +3282,11 @@ private:
         if (regionViewChanged) regionViewChanged();
     }
 
+    bool _marquee = false;
+    QPoint _marqueeStart;
+    QRect _marqueeRect;
+    std::set<int> _marqueeBase;
+
     xiv::RegionClipboard _regionClipboard;
     std::vector<xiv::RegionClipboardItem> _regionGroupClipboard;
     MidiTrack *_copiedTrackFocus = nullptr;
@@ -3117,7 +3296,7 @@ private:
 
     bool regionClipboardShortcut(const QKeyEvent *event) const {
         return (_selectedRegionId && matchesCommand(event, QStringLiteral("copy"))) ||
-               (_selected && _regionClipboard.duration > 0 && matchesCommand(event, QStringLiteral("paste")));
+               (_selected && !xiv::systemRegionClipboard(_file->ticksPerQuarter()).empty() && matchesCommand(event, QStringLiteral("paste")));
     }
 
     void copyRegion(int id) {
@@ -3138,6 +3317,7 @@ private:
         _copiedTopTrack = _file->track(firstTrack);
         _regionGroupClipboard=std::move(items);
         _regionClipboard=_regionGroupClipboard.front().clip;
+        xiv::setClipboardPayload(xiv::regionMime, xiv::encodeRegionClipboard(_regionGroupClipboard, _file->ticksPerQuarter()));
         _lastCopiedRegionId = id;
     }
 
@@ -3195,10 +3375,9 @@ private:
     }
 
     void pasteRegionAtPlayhead(int track) {
-        if (!_file || !canEditQuantize() || _regionGroupClipboard.empty()) return;
-        if (_regionGroupClipboard.size() > 1 && _file->tracks()->contains(_copiedTrackFocus) &&
-            _file->tracks()->contains(_copiedTopTrack) && _file->track(track) == _copiedTrackFocus)
-            track = _file->tracks()->indexOf(_copiedTopTrack);
+        if (!_file || !canEditQuantize()) return;
+        _regionGroupClipboard = xiv::systemRegionClipboard(_file->ticksPerQuarter());
+        if (_regionGroupClipboard.empty()) return;
         std::vector<int> channels;
         for(auto *t : *_file->tracks()) channels.push_back(t->assignedChannel());
         auto draft=_regions;

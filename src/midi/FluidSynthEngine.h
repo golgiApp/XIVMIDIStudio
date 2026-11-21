@@ -25,6 +25,8 @@
 #include <QList>
 #include <QPair>
 #include <QRecursiveMutex>
+#include <set>
+#include <atomic>
 #include <QString>
 #include <QStringList>
 #include <atomic>
@@ -134,6 +136,7 @@ public:
      * \brief Returns the singleton instance.
      */
     static FluidSynthEngine* instance();
+    int estimatedPerformanceVoices() const;
 
     // === Lifecycle ===
 
@@ -216,6 +219,7 @@ public:
      * \param data Raw MIDI message bytes
      */
     void sendMidiData(const QByteArray &data);
+    void sendMetronomeData(const QByteArray &data);
 
     // === Export ===
 
@@ -313,6 +317,7 @@ private:
 
     // Mutex protecting all fluid_* calls and engine state changes cross-thread
     mutable QRecursiveMutex _engineMutex;
+    mutable std::set<unsigned int> _metronomeVoices;
 
     // SoundFont tracking: sfont_id → file path (in load order, last = highest priority)
     QList<QPair<int, QString>> _loadedFonts;
@@ -324,7 +329,8 @@ private:
     QString _audioDriverName;
     QString _reverbEngine;
     double _gain;
-    double _playbackVolume = 1.0;
+    std::atomic<float> _playbackVolume{1.0f};
+    static int renderAudio(void *data, int len, int nfx, float *fx[], int nout, float *out[]);
     double _sampleRate;
     bool _reverbEnabled;
     bool _chorusEnabled;

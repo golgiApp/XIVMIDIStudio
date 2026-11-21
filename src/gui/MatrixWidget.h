@@ -130,6 +130,7 @@ public:
     void highlightProgramConflicts(const std::vector<xiv::RenderedRegionNote> &notes);
     void setPianoRollGridMode(xiv::PianoRollGridMode mode);
     std::function<void(xiv::MidiRegionModel, const QString &)> commitProjectedRegions;
+    bool regionViewEnabled() const { return _regionViewEnabled; }
     bool allTracksEditing() const { return _regionViewEnabled && (_regionShowAll || _selectedViewRegionIds.size() > 1); }
     bool hasAllTracksSelection() const { return !_allSelection.empty(); }
     void allTracksSelectAll();
@@ -142,6 +143,12 @@ public:
     bool allTracksEditable() const { return canEditAllTracks(); }
     void selectAllTracksVelocityNote(int id);
     bool setAllTracksVelocities(const std::map<int, int> &velocities);
+    bool hasProjectedSelection() const { return allTracksEditing() ? !_allSelection.empty() : !_regionSelection.empty(); }
+    bool filterSelectedChordVoices(int mode) {
+        static const char *commands[]={"ffxiv_keep_highest","ffxiv_keep_lowest","ffxiv_keep_inner",
+            "ffxiv_remove_highest","ffxiv_remove_inner","ffxiv_remove_lowest"};
+        return mode>=0 && mode<6 && editSelectedNotes(QString::fromLatin1(commands[mode]));
+    }
     bool copyProjectedNotes();
     bool pasteNotesAtPlayhead();
     std::function<void(int)> seekTimeRequested;

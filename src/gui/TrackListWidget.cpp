@@ -386,8 +386,11 @@ void TrackListWidget::showTrackContextMenu(MidiTrack *track, const QPoint &globa
     QAction *explodeAction = menu.addAction(tr("Explode Chords to Tracks"));
     QMenu *voiceFilterMenu = menu.addMenu(tr("Chord Voice Filter (FFXIV)"));
     QAction *voiceHighAction = voiceFilterMenu->addAction(tr("Keep Highest Note per Chord"));
+    QAction *voiceInnerAction = voiceFilterMenu->addAction(tr("Keep Inner Notes"));
     QAction *voiceLowAction = voiceFilterMenu->addAction(tr("Keep Lowest Note per Chord"));
-    QAction *voiceInnerAction = voiceFilterMenu->addAction(tr("Keep Inner Notes (Remove Outer Voices)"));
+    QAction *removeHighAction = voiceFilterMenu->addAction(tr("Remove Highest Note Only"));
+    QAction *removeInnerAction = voiceFilterMenu->addAction(tr("Remove Inner Notes Only"));
+    QAction *removeLowAction = voiceFilterMenu->addAction(tr("Remove Lowest Note Only"));
     QAction *splitAction = menu.addAction(tr("Split Channels to Tracks"));
 
     menu.addSeparator();
@@ -459,6 +462,12 @@ void TrackListWidget::showTrackContextMenu(MidiTrack *track, const QPoint &globa
         emit filterTrackChordVoicesRequested(track, 1);
     } else if (selectedAction == voiceInnerAction) {
         emit filterTrackChordVoicesRequested(track, 2);
+    } else if (selectedAction == removeHighAction) {
+        emit filterTrackChordVoicesRequested(track, 3);
+    } else if (selectedAction == removeInnerAction) {
+        emit filterTrackChordVoicesRequested(track, 4);
+    } else if (selectedAction == removeLowAction) {
+        emit filterTrackChordVoicesRequested(track, 5);
     } else if (selectedAction == splitAction) {
         emit splitTrackChannelsRequested(track);
     } else if (selectedAction == selectAllAction) {

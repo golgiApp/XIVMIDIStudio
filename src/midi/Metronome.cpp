@@ -89,14 +89,14 @@ void Metronome::click(bool isDownbeat) {
 
         // Send command multiple times simultaneously to amplify polyphony
         // to prevent being drowned out
-        MidiOutput::sendCommand(event);
-        MidiOutput::sendCommand(event);
-        MidiOutput::sendCommand(event);
+        MidiOutput::sendMetronomeCommand(event);
+        MidiOutput::sendMetronomeCommand(event);
+        MidiOutput::sendMetronomeCommand(event);
         
         // Note Off follows immediately for click sounds
         event[0] = (char)0x89;
         event[2] = 0;
-        MidiOutput::sendCommand(event);
+        MidiOutput::sendMetronomeCommand(event);
     }
 }
 

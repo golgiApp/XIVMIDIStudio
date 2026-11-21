@@ -185,6 +185,15 @@ QString MidiOutput::outputPort() {
     return _outPort;
 }
 
+void MidiOutput::sendMetronomeCommand(const QByteArray &array) {
+#ifdef FLUIDSYNTH_SUPPORT
+    if (_outPort == FLUIDSYNTH_PORT_NAME) {
+        FluidSynthEngine::instance()->sendMetronomeData(array); return;
+    }
+#endif
+    sendCommand(array);
+}
+
 void MidiOutput::sendEnqueuedCommand(QByteArray array) {
     if (_outPort != "") {
 #ifdef FLUIDSYNTH_SUPPORT

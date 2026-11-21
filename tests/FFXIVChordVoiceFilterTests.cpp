@@ -42,6 +42,9 @@ int main() {
     assert((deletionIds(notes, Mode::KeepHighest) == std::set<std::uint64_t>{1,2,3,8}));
     assert((deletionIds(notes, Mode::KeepLowest) == std::set<std::uint64_t>{2,3,4,9}));
     assert((deletionIds(notes, Mode::KeepInner) == std::set<std::uint64_t>{1,4}));
+    assert((deletionIds(notes, Mode::RemoveHighest) == std::set<std::uint64_t>{4,9}));
+    assert((deletionIds(notes, Mode::RemoveLowest) == std::set<std::uint64_t>{1,8}));
+    assert((deletionIds(notes, Mode::RemoveInner) == std::set<std::uint64_t>{2,3}));
     auto t = deletionIds(notes, Mode::KeepHighest, 4);
     assert(t.count(10) && !t.count(11));
     auto d = deletionIds(notes, Mode::KeepHighest, 0);

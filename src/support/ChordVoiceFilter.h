@@ -14,7 +14,7 @@
 
 namespace FfxivVoice {
 
-enum class Mode { KeepHighest, KeepLowest, KeepInner };
+enum class Mode { KeepHighest, KeepLowest, KeepInner, RemoveHighest, RemoveInner, RemoveLowest };
 struct Note {
     std::uint64_t id;  // MidiEditor's stable note/event handle mapping
     int track;         // track identity
@@ -85,7 +85,7 @@ inline std::set<std::uint64_t> deletionIds(const std::vector<Note>& notes,
             // Singletons are always retained. For Inner mode, dyads are retained
             // because they have no inner voice to extract.
             const auto count = j - i;
-            if (count > 1 && (mode != Mode::KeepInner || count >= 3)) {
+            if (count > 1 && ((mode != Mode::KeepInner && mode != Mode::RemoveInner) || count >= 3)) {
                 std::vector<const Note*> chord(group.begin() + static_cast<std::ptrdiff_t>(i),
                                                 group.begin() + static_cast<std::ptrdiff_t>(j));
                 std::sort(chord.begin(), chord.end(), [](auto a, auto b) {
@@ -94,6 +94,9 @@ inline std::set<std::uint64_t> deletionIds(const std::vector<Note>& notes,
                 for (std::size_t k = 0; k < chord.size(); ++k) {
                     bool remove = mode == Mode::KeepHighest ? k + 1 < chord.size()
                                 : mode == Mode::KeepLowest ? k > 0
+                                : mode == Mode::RemoveHighest ? k + 1 == chord.size()
+                                : mode == Mode::RemoveLowest ? k == 0
+                                : mode == Mode::RemoveInner ? k > 0 && k + 1 < chord.size()
                                 : (k == 0 || k + 1 == chord.size());
                     if (remove) result.insert(chord[k]->id);
                 }

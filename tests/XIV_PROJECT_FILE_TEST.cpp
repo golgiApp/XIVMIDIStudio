@@ -8,6 +8,7 @@
 #include "../src/MidiEvent/NoteOnEvent.h"
 #include "../src/support/ProjectDocument.h"
 #include <cassert>
+#include "../src/midi/TempoClipboard.h"
 static QByteArray read(const QString &p){QFile f(p);assert(f.open(QIODevice::ReadOnly));return f.readAll();}
 int main(int argc,char**argv){
  QCoreApplication app(argc,argv);QTemporaryDir dir;assert(dir.isValid());
@@ -20,6 +21,7 @@ int main(int argc,char**argv){
  xiv::MidiRegionModel model;assert(xiv::decodeProjectRegions(state,1,model));
  imported.setRegionLayout(model);imported.setProjectRegions(state);imported.track(0)->assignChannel(-1);
  imported.track(0)->setMuted(true);imported.track(0)->setHidden(true);
+ imported.setExportMetadata(QJsonObject{{"title","April in Paris"},{"artist","Count Basie"},{"players",8}});
  assert(imported.saveProject(project));assert(read(source)==original);
  assert(!imported.save(source));assert(!imported.saveArrangedMidi(source));assert(!imported.saveArrangedMidi(exported));
  assert(QFile::remove(source));
@@ -28,6 +30,19 @@ int main(int argc,char**argv){
  MidiFile reopened(project,&ok);assert(ok && reopened.isProject());
  assert(reopened.track(0)->assignedChannel()==-1 && reopened.track(0)->muted() && reopened.track(0)->hidden());
  assert(reopened.projectRegions()==state);
+ const auto originalTempo=xiv::readTempoMap(&reopened);
+ auto tempo=originalTempo;
+ xiv::TempoMap copied; copied[0]={500000,true,nullptr,{.25,.75}}; copied[96]={400000};
+ const auto tempoBytes=xiv::encodeTempoClipboard(copied,{0,96},reopened.ticksPerQuarter());
+ assert(xiv::pasteTempoClipboard(tempoBytes,reopened.ticksPerQuarter(),96,reopened.track(0),tempo).size()==2);
+ xiv::writeTempoMap(&reopened,tempo,"Paste Tempo Points");
+ assert(xiv::readTempoMap(&reopened).contains(192));
+ reopened.protocol()->undo();
+ assert(xiv::readTempoMap(&reopened).keys()==originalTempo.keys());
+ reopened.protocol()->redo();
+ assert(xiv::readTempoMap(&reopened)[96].rampToNext);
+ reopened.protocol()->undo();
+ assert(reopened.exportMetadata()==imported.exportMetadata());
  reopened.preparePlayerData(0);
  for(auto *e:*reopened.playerData()) assert(!dynamic_cast<NoteOnEvent*>(e));
  reopened.track(0)->assignChannel(1);reopened.track(0)->setMuted(false);

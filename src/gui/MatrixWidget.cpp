@@ -879,7 +879,7 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
             const int id = n.ownedNoteId ? n.ownedNoteId : n.sourceId;
             const bool selected = allTracksEditing() ? _allSelection.count(allNoteId(n))
                                                  : _regionSelection.count(id);
-            if (_regionEditingSafe && !selected) continue;
+
             const int line = 127 - n.pitch;
             if (line < startLineY || line > endLineY) continue;
             const int begin = xPosOfMs(file->msOfTick(n.startTick));
@@ -900,9 +900,8 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
                 static const char *colors[] = {"#E87572", "#78BFE8", "#98C66A", "#E5A15D", "#C28BE2"};
                 accent = QColor(colors[index]);
             }
+            if (n.pitch < 48 || n.pitch > 84) accent = QColor("#858990");
             painter->fillRect(QRect(x, y + 1, ex - x, h), accent);
-            if (n.pitch < 48 || n.pitch > 84)
-                painter->fillRect(QRect(x, y + 1, ex - x, h), QBrush(QColor("#E33C46"), Qt::BDiagPattern));
             painter->setPen(selected ? QColor("#FFE0A4") : accent.darker(150));
             painter->drawRect(QRect(x, y + 1, std::max(0, ex - x - 1),
                                     std::max(0, h - 1)));
@@ -940,39 +939,27 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
     }
 
     if (Tool::currentTool()) {
+        painter->save();
         painter->setClipping(true);
         painter->setClipRect(ToolArea);
         Tool::currentTool()->draw(painter);
-        painter->setClipping(false);
+        painter->restore();
     }
     
+    painter->setClipping(false);
+    painter->setOpacity(1.0);
     // The same gold line and handle as the arrangement playhead.
-    const int playheadMs = MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick());
+    const int playheadMs = MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : file->msOfTick(file->cursorTick());
     const int playheadX = xPosOfMs(playheadMs);
     if (playheadX >= lineNameWidth && playheadX < width()) {
+        painter->setPen(QPen(QColor(12,15,20,180),5));
+        painter->drawLine(playheadX,25,playheadX,height());
         painter->setPen(QPen(QColor("#FFDD75"), 2));
         painter->drawLine(playheadX, 25, playheadX, height());
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor("#FFDD75"));
         painter->drawPolygon(QPolygon{QPoint(playheadX - 8, 12), QPoint(playheadX + 8, 12), QPoint(playheadX, 25)});
     }
-    int rulerHeight = 50;
-
-    // paint the pauseTick of file if >= 0
-    if (!MidiPlayer::isPlaying() && midiFile()->pauseTick() >= startTick && midiFile()->pauseTick() <= endTick) {
-        int x = xPosOfMs(msOfTick(midiFile()->pauseTick()));
-
-        QPointF points[3] = {
-            QPointF(x - 8, rulerHeight / 2 + 2),
-            QPointF(x + 8, rulerHeight / 2 + 2),
-            QPointF(x, rulerHeight - 2),
-        };
-
-        painter->setBrush(QBrush(Appearance::grayColor(), Qt::SolidPattern));
-
-        painter->drawPolygon(points, 3);
-    }
-
     // border
     painter->setPen(_cachedBorderColor);
     painter->drawLine(width() - 1, height() - 1, lineNameWidth, height() - 1);
@@ -1251,8 +1238,8 @@ void MatrixWidget::paintPianoKey(QPainter *painter, int number, int x, int y,
         // dark UI themes. Do not change Appearance::pianoWhiteKeyColor(), as
         // that is also used by the Piano Roll's timeline/ruler background.
         // This palette applies ONLY to the drawn keyboard keys.
-        const QColor whiteKey = _cachedShouldUseDarkMode ? QColor(248, 249, 252) : _cachedPianoWhiteKeyColor;
-        const QColor blackKey = _cachedShouldUseDarkMode ? QColor(22, 25, 31) : _cachedPianoBlackKeyColor;
+        const QColor whiteKey = (number < 48 || number > 84) ? QColor(135, 140, 148) : _cachedShouldUseDarkMode ? QColor(248, 249, 252) : _cachedPianoWhiteKeyColor;
+        const QColor blackKey = (number < 48 || number > 84) ? QColor(76, 81, 89) : _cachedShouldUseDarkMode ? QColor(22, 25, 31) : _cachedPianoBlackKeyColor;
         const QColor whiteHover = _cachedShouldUseDarkMode ? QColor(224, 236, 250) : _cachedPianoWhiteKeyHoverColor;
         const QColor blackHover = _cachedShouldUseDarkMode ? QColor(55, 65, 83) : _cachedPianoBlackKeyHoverColor;
         const QColor whiteSelected = _cachedShouldUseDarkMode ? QColor(190, 215, 243) : _cachedPianoWhiteKeySelectedColor;
@@ -2165,7 +2152,7 @@ QString MatrixWidget::noteShortcut(const QKeyEvent *event) const {
         return QStringLiteral("delete");
     for (const auto *id : {"xiv_note_cut", "copy", "delete", "quantize", "transpose",
                           "transpose_up", "transpose_down", "xiv_note_legato", "xiv_note_overlaps",
-                          "ffxiv_keep_highest", "ffxiv_keep_lowest", "ffxiv_keep_inner"})
+                          "ffxiv_keep_highest", "ffxiv_keep_lowest", "ffxiv_keep_inner", "ffxiv_remove_highest", "ffxiv_remove_inner", "ffxiv_remove_lowest"})
         if (noteBindings(QString::fromLatin1(id)).contains(key)) return QString::fromLatin1(id);
     return {};
 }
@@ -2228,8 +2215,11 @@ void MatrixWidget::showNoteMenu(const QPoint &position) {
     add(menu, tr("Force Legato"), QStringLiteral("xiv_note_legato"));
     auto *filter = menu.addMenu(tr("Chord Voice Filter (FFXIV)"));
     add(*filter, tr("Keep Highest Note"), QStringLiteral("ffxiv_keep_highest"));
-    add(*filter, tr("Keep Lowest Note"), QStringLiteral("ffxiv_keep_lowest"));
     add(*filter, tr("Keep Inner Notes"), QStringLiteral("ffxiv_keep_inner"));
+    add(*filter, tr("Keep Lowest Note"), QStringLiteral("ffxiv_keep_lowest"));
+    add(*filter, tr("Remove Highest Note Only"), QStringLiteral("ffxiv_remove_highest"));
+    add(*filter, tr("Remove Inner Notes Only"), QStringLiteral("ffxiv_remove_inner"));
+    add(*filter, tr("Remove Lowest Note Only"), QStringLiteral("ffxiv_remove_lowest"));
     auto *quantizeMenu = menu.addMenu(tr("Quantize Selected Notes"));
     for (int i = 0; i < 7; ++i) {
         auto *action = quantizeMenu->addAction(tr(xiv::quantizeNames[i]));
@@ -2276,14 +2266,17 @@ bool MatrixWidget::editSelectedNotes(const QString &command, int semitones) {
     const bool quantize = command.startsWith(QStringLiteral("quantize"));
     const int presetIndex = command.startsWith(QStringLiteral("quantize_")) ? command.mid(9).toInt() : -1;
     std::set<std::uint64_t> remove;
-    if (command.startsWith(QStringLiteral("ffxiv_keep_"))) {
+    if (command.startsWith(QStringLiteral("ffxiv_keep_")) || command.startsWith(QStringLiteral("ffxiv_remove_"))) {
         std::vector<FfxivVoice::Note> input;
         for (const auto &note : _regionViewNotes)
             if (const int id = selectedNoteId(note))
                 input.push_back({static_cast<std::uint64_t>(id), note.trackIndex, note.channel,
                     note.pitch, note.startTick, file->track(note.trackIndex)->name().toStdString()});
-        const auto mode = command.endsWith(QStringLiteral("highest")) ? FfxivVoice::Mode::KeepHighest :
+        auto mode = command.endsWith(QStringLiteral("highest")) ? FfxivVoice::Mode::KeepHighest :
             command.endsWith(QStringLiteral("lowest")) ? FfxivVoice::Mode::KeepLowest : FfxivVoice::Mode::KeepInner;
+        if (command.startsWith(QStringLiteral("ffxiv_remove_")))
+            mode = command.endsWith(QStringLiteral("highest")) ? FfxivVoice::Mode::RemoveHighest :
+                command.endsWith(QStringLiteral("lowest")) ? FfxivVoice::Mode::RemoveLowest : FfxivVoice::Mode::RemoveInner;
         remove = FfxivVoice::deletionIds(input, mode,
             std::max(0, _settings->value("ffxiv/chord_voice_tolerance_ticks", 0).toInt()));
         if (remove.empty()) return false;
@@ -2705,12 +2698,22 @@ void MatrixWidget::mouseMoveEvent(QMouseEvent *event) {
     int mouseX = qRound(event->position().x());
     int mouseY = qRound(event->position().y());
     int currentMs = msOfXPos(mouseX);
+    if (_regionViewEnabled && mouseX >= lineNameWidth) {
+        QString hint;
+        for (const auto &note : _regionViewNotes) if (regionNoteRect(note).contains(event->position().toPoint())) {
+            static const char *names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+            hint = tr("%1%2 · MIDI %3").arg(QString::fromLatin1(names[note.pitch % 12])).arg(note.pitch / 12 - 1).arg(note.pitch);
+            if (note.pitch < 48 || note.pitch > 84) hint += tr(" · Outside C3–C6");
+            break;
+        }
+        setToolTip(hint);
+    }
     if (_showGMDrumLabels && mouseInRect(PianoArea) && mouseX >= 75 && mouseX < lineNameWidth) {
         const int note = 127 - lineAtY(mouseY);
         const char *name = GMDrumMap::nameForNote(note);
         setToolTip(name ? tr("MIDI note %1: %2 (GM percussion)").arg(note).arg(QString::fromLatin1(name))
                         : tr("MIDI note %1: no GM1 percussion assignment").arg(note));
-    } else if (_showGMDrumLabels && !toolTip().isEmpty()) {
+    } else if (_showGMDrumLabels && mouseX < lineNameWidth && !toolTip().isEmpty()) {
         setToolTip(QString());
     }
 
@@ -2943,7 +2946,7 @@ void MatrixWidget::mousePressEvent(QMouseEvent *event) {
         event->modifiers() == Qt::NoModifier &&
         (TimeLineArea.contains(event->position()) ||
          (event->position().x() >= lineNameWidth && event->position().y() >= timeHeight &&
-          std::abs(event->position().x() - xPosOfMs(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick()))) <= 10))) {
+          std::abs(event->position().x() - xPosOfMs(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : file->msOfTick(file->cursorTick()))) <= 10))) {
         _rulerDragging = true;
         seekTimeRequested(msOfXPos(qRound(event->position().x())));
         event->accept();
@@ -3561,7 +3564,7 @@ void MatrixWidget::startNote(int note) {
         MidiInput::injectMessage(0x90 | ch, note, 100);
         if (file) {
             // Use the playback tick (not cursor tick) so ghost notes start at the playhead
-            int playTick = file->tick(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : msOfTick(file->cursorTick()));
+            int playTick = file->tick(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : file->msOfTick(file->cursorTick()));
             _noteStartTicks[note] = playTick;
         }
     }

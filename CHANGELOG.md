@@ -2,7 +2,18 @@
 
 Rudimentary changelog of new features & fixes between recent versions.
 A more complete summary of all noteworthly changes can be found on the releases page.
-https://github.com/Meowchestra/MidiEditor/releases
+https://github.com/golgiApp/XIVMIDIStudio/releases
+
+## [0.4.3] - 2026-11-20
+
+- Add a preview-based estimated voice readout: yellow 12–15, red 16+, release tails included, SoundFont layers grouped, metronome excluded. Master volume is applied after synthesis and never changes exported MIDI.
+- Use project names in window/taskbar titles, reorder Inspector sections, enlarge scrollbars, restore playhead repainting, and use regular region/tempo pointers.
+- Grey out-of-range notes and keys; show note names on hover and an optional-proceed export warning listing affected tracks.
+- Add arrangement marquee selection and cross-project region clipboard transfers with PPQ conversion, relative spacing, destination routing, and independent note/region/tempo payloads.
+- Add tempo-point selection/copy/paste with ramp shapes, segment replacement, and undo/redo.
+- Consolidate global visibility/audibility controls, remove marker navigation shortcuts and old Paste Options, expand chord voice filters, and restore region overlap/legato tools.
+- Remove the automatic export suffix; add filename preferences, preview, and project naming metadata.
+- Preserve `.xms`/legacy `.xivms` compatibility and protection of original imported MIDI files.
 
 ## [0.4.2] - 2026-11-18
 

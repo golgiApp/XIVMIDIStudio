@@ -714,14 +714,12 @@ QList<ToolbarActionInfo> LayoutSettingsWidget::getDefaultActions() {
     // Playback actions
     actions << ToolbarActionInfo{"separator5", tr("--- Separator ---"), "", nullptr, true, false, "Separator"};
     actions << ToolbarActionInfo{"back_to_begin", tr("Back to Beginning"), ":/run_environment/graphics/tool/back_to_begin.png", nullptr, true, false, "Playback"};
-    actions << ToolbarActionInfo{"back_marker", tr("Back Marker"), ":/run_environment/graphics/tool/back_marker.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"back", tr("Back"), ":/run_environment/graphics/tool/back.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"play", tr("Play"), ":/run_environment/graphics/tool/play.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"pause", tr("Pause"), ":/run_environment/graphics/tool/pause.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"stop", tr("Stop"), ":/run_environment/graphics/tool/stop.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"record", tr("Record"), ":/run_environment/graphics/tool/record.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"forward", tr("Forward"), ":/run_environment/graphics/tool/forward.png", nullptr, true, false, "Playback"};
-    actions << ToolbarActionInfo{"forward_marker", tr("Forward Marker"), ":/run_environment/graphics/tool/forward_marker.png", nullptr, true, false, "Playback"};
 
     // Additional tools
     actions << ToolbarActionInfo{"separator6", tr("--- Separator ---"), "", nullptr, true, false, "Separator"};
@@ -831,8 +829,8 @@ QStringList LayoutSettingsWidget::getComprehensiveActionOrder() {
             << "glue" << "scissors" << "delete_overlaps" << "separator5"
             << "move_all" << "move_lr" << "move_ud" << "size_change" << "separator6"
             << "transpose" << "transpose_up" << "transpose_down" << "separator7"
-            << "back_to_begin" << "back_marker" << "back" << "play" << "pause"
-            << "stop" << "record" << "forward" << "forward_marker" << "separator8"
+            << "back_to_begin" << "back" << "play" << "pause"
+            << "stop" << "record" << "forward" << "separator8"
             << "metronome"
             << "align_left" << "equalize" << "align_right" << "separator9"
             << "zoom_hor_in" << "zoom_hor_out" << "zoom_ver_in" << "zoom_ver_out"
@@ -851,8 +849,8 @@ QStringList LayoutSettingsWidget::getDefaultEnabledActions() {
             << "glue" << "scissors" << "delete_overlaps" << "separator5"
             // separator6 disabled because move actions are disabled by default
             // separator7 disabled because transpose actions are disabled by default
-            << "back_to_begin" << "back_marker" << "back" << "play" << "pause"
-            << "stop" << "record" << "forward" << "forward_marker" << "separator8"
+            << "back_to_begin" << "back" << "play" << "pause"
+            << "stop" << "record" << "forward" << "separator8"
             << "metronome"
             << "align_left" << "equalize" << "align_right" << "separator9"
             << "zoom_hor_in" << "zoom_hor_out" << "zoom_ver_in" << "zoom_ver_out"
@@ -883,8 +881,8 @@ void LayoutSettingsWidget::getDefaultRowDistribution(QStringList &row1Actions, Q
 
     // Row 2: Playback and view actions
     row2Actions 
-            << "back_to_begin" << "back_marker" << "back" << "play" << "pause"
-            << "stop" << "record" << "forward" << "forward_marker" << "separator10"
+            << "back_to_begin" << "back" << "play" << "pause"
+            << "stop" << "record" << "forward" << "separator10"
             << "metronome"
             << "zoom_hor_in" << "zoom_hor_out" << "zoom_ver_in" << "zoom_ver_out"
             << "lock" << "separator11" << "thru" << "panic";
@@ -924,8 +922,8 @@ QStringList LayoutSettingsWidget::getDefaultToolbarOrder() {
     order   << "standard_tool" << "select_left" << "select_right" << "separator3"
             << "new_note" << "remove_notes" << "copy" << "paste" << "separator4"
             << "glue" << "scissors" << "delete_overlaps" << "separator5"
-            << "back_to_begin" << "back_marker" << "back" << "play" << "pause"
-            << "stop" << "record" << "forward" << "forward_marker" << "separator6"
+            << "back_to_begin" << "back" << "play" << "pause"
+            << "stop" << "record" << "forward" << "separator6"
             << "metronome" << "align_left" << "equalize" << "align_right" << "separator7"
             << "zoom_hor_in" << "zoom_hor_out" << "zoom_ver_in" << "zoom_ver_out"
             << "lock" << "separator8" << "quantize" << "magnet" << "separator9"
@@ -966,8 +964,8 @@ void LayoutSettingsWidget::getDefaultToolbarRowDistribution(QStringList &row1Act
             << "measure" << "time_signature" << "tempo";
 
     // Row 2: Playback and view
-    row2Actions << "back_to_begin" << "back_marker" << "back" << "play" << "pause"
-            << "stop" << "record" << "forward" << "forward_marker" << "separator10"
+    row2Actions << "back_to_begin" << "back" << "play" << "pause"
+            << "stop" << "record" << "forward" << "separator10"
             << "metronome" << "zoom_hor_in" << "zoom_hor_out" << "zoom_ver_in" << "zoom_ver_out"
             << "lock" << "separator11";
 }

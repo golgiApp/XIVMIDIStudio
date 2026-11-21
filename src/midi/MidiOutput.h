@@ -70,6 +70,7 @@ public:
      * \param array Raw MIDI data bytes to send
      */
     static void sendCommand(QByteArray array);
+    static void sendMetronomeCommand(const QByteArray &array);
 
     /**
      * \brief Sends a MIDI event immediately.

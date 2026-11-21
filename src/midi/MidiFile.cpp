@@ -200,6 +200,7 @@ MidiFile::MidiFile(QString path, bool *ok, QStringList *log) {
             track->setMuted(state.value("muted").toBool()); track->setHidden(state.value("hidden").toBool());
             const QColor color(state.value("color").toString()); if(color.isValid()) *track->color()=color;
         }
+        _exportMetadata=project.value("exportMetadata").toObject();
         _projectFile=true; _standaloneMidi=false;
         _sourcePath=project.value("sourcePath").toString();
         _projectRegions=project.value("regions").toObject(); setRegionLayout(layout);
@@ -1798,6 +1799,7 @@ bool MidiFile::saveProject(const QString &path) {
     }
     QJsonObject root;
     root.insert("format", "XIV MIDI Studio Project"); root.insert("version", 1);
+    root.insert("exportMetadata", _exportMetadata);
     root.insert("sourcePath", _sourcePath); root.insert("regions", _projectRegions);
     root.insert("tracks", tracks); root.insert("cursorTick", _cursorTick);
     root.insert("soloTrack", _tracks->indexOf(soloTrack()));

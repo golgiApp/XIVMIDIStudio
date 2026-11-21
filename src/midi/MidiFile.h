@@ -118,6 +118,8 @@ public:
 
     // Save As writes the audible arrangement to one standard MIDI file.
     bool saveStandaloneMidi(const QString &path);
+    QJsonObject exportMetadata() const { return _exportMetadata; }
+    void setExportMetadata(const QJsonObject &metadata) { _exportMetadata=metadata; }
     bool isProject() const { return _projectFile; }
     QString sourcePath() const { return _sourcePath; }
     void setSourcePath(const QString &path) { _sourcePath = path; }
@@ -563,6 +565,7 @@ signals:
 private:
     bool writeArrangedMidi(const QString &path);
     bool _standaloneMidi = false;
+    QJsonObject _exportMetadata;
     bool _projectFile = false;
     QString _sourcePath;
     QJsonObject _projectRegions;

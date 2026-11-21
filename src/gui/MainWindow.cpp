@@ -175,6 +175,9 @@
 #include "../converter/MusicXml/MsczImporter.h"
 #include "../converter/GuitarPro/GpImporter.h"
 #include "../midi/ChordDetector.h"
+#include "../support/ExportNaming.h"
+#include "../support/VoiceWarning.h"
+#include <QSpinBox>
 
 static QStringList enabledSoundFontPaths() {
     QStringList paths;
@@ -295,6 +298,15 @@ MainWindow::MainWindow(QString initFile)
     EditorTool::setMainWindow(this);
 
     setWindowTitle(QApplication::applicationName() + " " + QApplication::applicationVersion());
+    setStyleSheet(styleSheet() + QStringLiteral(
+        "QScrollBar:horizontal { height:16px; background:#252b33; margin:0; }"
+        "QScrollBar:vertical { width:16px; background:#252b33; margin:0; }"
+        "QScrollBar::handle { background:#a4abb5; border:2px solid #252b33; border-radius:5px; }"
+        "QScrollBar::handle:horizontal { min-width:32px; }"
+        "QScrollBar::handle:vertical { min-height:32px; }"
+        "QScrollBar::handle:hover { background:#c2c8d0; }"
+        "QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }"
+        "QScrollBar::add-page, QScrollBar::sub-page { background:none; }"));
     // Note: setWindowIcon doesn't use QAction, so we keep the direct approach
     setWindowIcon(Appearance::adjustIconForDarkMode(":/run_environment/graphics/icon.png"));
 
@@ -751,7 +763,7 @@ MainWindow::MainWindow(QString initFile)
     quantizeProjectRegions->setToolTip(
         tr("Apply the project Quantize dropdown setting to every region in the project."));
     projectForm->addRow(quantizeProjectRegions);
-    inspectorLayout->addWidget(projectGroup);
+    inspectorLayout->insertWidget(0, projectGroup);
     inspectorLayout->addStretch(1);
 
     auto *inspectorScroll = new QScrollArea(arrangementPane);
@@ -1180,6 +1192,9 @@ MainWindow::MainWindow(QString initFile)
         if (file) for (auto *track : *file->tracks()) {
             hidden |= track->hidden(); muted |= track->muted();
         }
+        if (file) for(int i=0;i<16;++i) {
+            hidden |= !ChannelVisibilityManager::instance().isChannelVisible(i); muted |= file->channel(i)->mute();
+        }
         visibilityAll->setEnabled(file && file->numTracks());
         audibilityAll->setEnabled(file && file->numTracks());
         visibilityAll->setIcon(xiv::controlIcon(hidden ? xiv::ControlIcon::Hidden : xiv::ControlIcon::Eye));
@@ -1191,13 +1206,11 @@ MainWindow::MainWindow(QString initFile)
     };
     connect(visibilityAll, &QToolButton::clicked, this, [this, refreshGlobalTracks]() {
         if (!file) return;
-        const bool hidden = std::any_of(file->tracks()->begin(), file->tracks()->end(), [](MidiTrack *t){ return t->hidden(); });
-        (hidden ? _allTracksVisible : _allTracksInvisible)->trigger(); refreshGlobalTracks();
+        _actionMap.value("xiv_toggle_all_visible")->trigger(); refreshGlobalTracks();
     });
     connect(audibilityAll, &QToolButton::clicked, this, [this, refreshGlobalTracks]() {
         if (!file) return;
-        const bool muted = std::any_of(file->tracks()->begin(), file->tracks()->end(), [](MidiTrack *t){ return t->muted(); });
-        (muted ? _allTracksAudible : _allTracksMute)->trigger(); refreshGlobalTracks();
+        _actionMap.value("xiv_toggle_all_audible")->trigger(); refreshGlobalTracks();
     });
     auto *globalTrackTimer = new QTimer(trackHeaderActions);
     connect(globalTrackTimer, &QTimer::timeout, this, refreshGlobalTracks);
@@ -1567,6 +1580,35 @@ MainWindow::MainWindow(QString initFile)
     connect(volume, &QSlider::valueChanged, this, applyVolume);
     connect(master, &QToolButton::toggled, this, applyVolume);
     applyVolume();
+    auto *voicePanel = new QWidget(controlBar);
+    voicePanel->setFixedSize(92, 38);
+    voicePanel->setStyleSheet(QStringLiteral("background:#18202a; border:1px solid #526780; border-radius:4px;"));
+    auto *voiceLayout = new QVBoxLayout(voicePanel);
+    voiceLayout->setContentsMargins(3,1,3,1); voiceLayout->setSpacing(0);
+    auto *voiceValue = new QLabel(QStringLiteral("0"), voicePanel);
+    voiceValue->setAlignment(Qt::AlignCenter);
+    auto *voiceCaption = new QLabel(tr("EST. VOICES"), voicePanel);
+    voiceCaption->setAlignment(Qt::AlignCenter);
+    voiceCaption->setStyleSheet(QStringLiteral("color:#a8bed4; font-size:9px; border:0;"));
+    voiceLayout->addWidget(voiceValue); voiceLayout->addWidget(voiceCaption);
+    bar->addWidget(voicePanel);
+    auto *voiceTimer = new QTimer(voicePanel);
+    connect(voiceTimer, &QTimer::timeout, this,
+        [this, voicePanel, voiceValue, peak=0, peakMs=0, previousFile=QPointer<MidiFile>()]() mutable {
+        if (previousFile != file) { previousFile=file; peak=0; peakMs=0; }
+        int count=-1;
+#ifdef FLUIDSYNTH_SUPPORT
+        if (MidiOutput::isFluidSynthOutput()) count=FluidSynthEngine::instance()->estimatedPerformanceVoices();
+#endif
+        if (count>peak) { peak=count; peakMs=MidiPlayer::isPlaying()?MidiPlayer::timeMs():(file?file->msOfTick(file->cursorTick()):0); }
+        voiceValue->setText(count<0 ? QStringLiteral("—") : QString::number(count));
+        const auto color=xiv::voiceWarningColor(count);
+        voiceValue->setStyleSheet(QStringLiteral("color:%1; font:15px 'Consolas'; border:0;").arg(color));
+        voicePanel->setToolTip(count<0 ? tr("Voice estimation requires SoundFont playback.") :
+            tr("Preview-based estimate, including release tails; SoundFont layers count once. Not a measurement of FFXIV.\nYellow: 12–15. Red: 16+. Advisory only.\nPeak this project session: %1 at %2:%3.")
+            .arg(peak).arg(peakMs/60000).arg((peakMs/1000)%60,2,10,QChar('0')));
+    });
+    voiceTimer->start(50);
     bar->addStretch(1);
     auto *autoZoom = new QToolButton(controlBar);
     autoZoom->setText(tr("Fit Tracks"));
@@ -1803,7 +1845,7 @@ MainWindow::MainWindow(QString initFile)
         }
     });
     connect(transportRefresh, &QTimer::timeout, this, [this]() {
-        if (mw_matrixWidget && mw_matrixWidget->allTracksEditing())
+        if (mw_matrixWidget && mw_matrixWidget->regionViewEnabled())
             checkEnableActionsForSelection();
     });
     transportRefresh->start(100);
@@ -1815,8 +1857,8 @@ MainWindow::MainWindow(QString initFile)
     for (const auto *id : {"standard_tool", "new_note", "quantize"})
         if (auto *action = _actionMap.value(id)) noteMenu->addAction(action);
     auto *chordTools = noteMenu->addMenu(tr("Chord Tools"));
-    for (const auto *id : {"ffxiv_keep_highest", "ffxiv_keep_lowest",
-                           "ffxiv_keep_inner", "ffxiv_chord_tolerance"})
+    for (const auto *id : {"ffxiv_keep_highest", "ffxiv_keep_inner",
+                           "ffxiv_keep_lowest", "ffxiv_remove_highest", "ffxiv_remove_inner", "ffxiv_remove_lowest", "ffxiv_chord_tolerance"})
         if (auto *action = _actionMap.value(id)) chordTools->addAction(action);
     noteTools->setMenu(noteMenu);
     pianoHeaderLayout->addWidget(noteTools);
@@ -1991,7 +2033,9 @@ void MainWindow::updatePasteActionState() {
     // Simple check - enable paste if shared clipboard is available
     if (_pasteAction && EventTool::copiedEvents->size() == 0) {
         SharedClipboard *clipboard = SharedClipboard::instance();
-        bool sharedClipboardAvailable = clipboard->hasData();
+        bool sharedClipboardAvailable = clipboard->hasData() ||
+            (QApplication::clipboard()->mimeData() && (QApplication::clipboard()->mimeData()->hasFormat(xiv::regionMime) ||
+             QApplication::clipboard()->mimeData()->hasFormat("application/x-xivms-tempo-v1")));
         _pasteAction->setEnabled(sharedClipboardAvailable);
     }
 }
@@ -2122,8 +2166,13 @@ void MainWindow::setFile(MidiFile *newFile) {
     Tool::setFile(newFile);
     this->file = newFile;
     connect(newFile, SIGNAL(trackChanged()), this, SLOT(updateTrackMenu()));
-    setWindowTitle(QApplication::applicationName() + " - " + newFile->path() + "[*]");
+    setWindowTitle(QApplication::applicationName() + " - " + (!newFile->isProject() ? tr("Untitled") : QFileInfo(newFile->path()).completeBaseName()) + "[*]");
     connect(newFile, SIGNAL(cursorPositionChanged()), channelWidget, SLOT(update()));
+    connect(newFile, &MidiFile::cursorPositionChanged, this, [this,newFile]() {
+        if(file!=newFile) return;
+        mw_matrixWidget->update();
+        if(_matrixWidgetContainer) _matrixWidgetContainer->update();
+    });
     connect(newFile, SIGNAL(cursorPositionChanged()), this, SLOT(updateChannelMenu()));
 
     // Connect recalcWidgetSize to the matrix widget container
@@ -2606,7 +2655,7 @@ void MainWindow::saveas() {
         QMessageBox::warning(this, tr("Save Project"), tr("The project could not be saved. Your previous saved file has not been replaced."));
         return;
     }
-    setWindowTitle(QApplication::applicationName() + " - " + path + "[*]");
+    setWindowTitle(QApplication::applicationName() + " - " + QFileInfo(path).completeBaseName() + "[*]");
     updateRecentPathsList(); setWindowModified(false);
 }
 
@@ -2958,7 +3007,7 @@ void MainWindow::newFile() {
     setFile(f);
 
     editTrack(0);
-    setWindowTitle(QApplication::applicationName() + tr(" - Untitled Document[*]"));
+    setWindowTitle(QApplication::applicationName() + tr(" - Untitled[*]"));
 }
 
 void MainWindow::panic() {
@@ -3144,7 +3193,11 @@ void MainWindow::setChordVoiceTolerance() {
 }
 
 void MainWindow::filterChordVoices(int mode, MidiTrack *track) {
-    if (!file || mode < 0 || mode > 2) return;
+    if (!file || mode < 0 || mode > 5) return;
+    if(track && _arrangementWidget) { _arrangementWidget->filterTrackRegions(track,mode); return; }
+    if(!track && mw_matrixWidget && mw_matrixWidget->regionViewEnabled()) {
+        mw_matrixWidget->filterSelectedChordVoices(mode); return;
+    }
 
     // A Tools-menu operation affects only selected notes. A track-menu operation
     // affects the entire chosen track, regardless of any selection elsewhere.
@@ -3201,7 +3254,8 @@ void MainWindow::filterChordVoices(int mode, MidiTrack *track) {
     const QStringList actionNames = {
         tr("Keep Highest Chord Notes"),
         tr("Keep Lowest Chord Notes"),
-        tr("Keep Inner Chord Notes")
+        tr("Keep Inner Chord Notes"), tr("Remove Highest Note Only"),
+        tr("Remove Inner Notes Only"), tr("Remove Lowest Note Only")
     };
     file->protocol()->startNewAction(actionNames.at(mode));
 
@@ -5164,7 +5218,8 @@ void MainWindow::transposeSelection(int semitones) {
 }
 
 void MainWindow::copy() {
-    if (mw_matrixWidget->allTracksEditing()) {
+    if (_arrangementWidget && _arrangementWidget->hasFocus() && _arrangementWidget->copySelectedMaterial()) return;
+    if (mw_matrixWidget->regionViewEnabled()) {
         mw_matrixWidget->copyProjectedNotes();
         return;
     }
@@ -5172,7 +5227,8 @@ void MainWindow::copy() {
 }
 
 void MainWindow::paste() {
-    if (mw_matrixWidget->allTracksEditing()) {
+    if (_arrangementWidget && _arrangementWidget->hasFocus() && _arrangementWidget->pasteSelectedMaterial()) return;
+    if (mw_matrixWidget->regionViewEnabled()) {
         mw_matrixWidget->pasteNotesAtPlayhead();
         return;
     }
@@ -5587,15 +5643,57 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     fileMB->addAction(saveAsAction);
     _actionMap["save_as"] = saveAsAction;
 
+    auto *exportNaming=fileMB->addAction(tr("Export Naming…"));
+    connect(exportNaming,&QAction::triggered,this,[this]() {
+        if(!file) return;
+        QDialog dialog(this); dialog.setWindowTitle(tr("Export Naming"));
+        QFormLayout form(&dialog);
+        const auto metadata=file->exportMetadata();
+        QLineEdit title(metadata.value("title").toString(QFileInfo(file->path()).completeBaseName()),&dialog);
+        QLineEdit artist(metadata.value("artist").toString(),&dialog);
+        QLineEdit editor(_settings->value("export/editor").toString(),&dialog);
+        QSpinBox players(&dialog); players.setRange(0,999); players.setSpecialValueText(tr("Not set"));
+        players.setValue(metadata.value("players").toInt());
+        QLineEdit pattern(_settings->value("export/name_pattern","{title}").toString(),&dialog);
+        form.addRow(tr("Song title"),&title); form.addRow(tr("Artist"),&artist);
+        form.addRow(tr("Editor / initials"),&editor); form.addRow(tr("Players"),&players);
+        form.addRow(tr("Filename format"),&pattern);
+        QLabel help(tr("Use {editor}, {players}, {artist}, {title}. Example: {editor} {players}P {artist} - {title}\nPlayer count is entered manually; it is not the number of tracks."),&dialog);
+        help.setWordWrap(true); form.addRow(&help);
+        QLabel preview(&dialog); preview.setWordWrap(true); form.addRow(tr("Preview"),&preview);
+        auto refresh=[&]() { preview.setText(xiv::exportBaseName(pattern.text(),title.text(),artist.text(),editor.text(),players.value())+".mid"); };
+        for(auto *field:{&title,&artist,&editor,&pattern}) connect(field,&QLineEdit::textChanged,&dialog,refresh);
+        connect(&players,&QSpinBox::valueChanged,&dialog,refresh); refresh();
+        QDialogButtonBox buttons(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog); form.addRow(&buttons);
+        connect(&buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
+        connect(&buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+        if(dialog.exec()!=QDialog::Accepted) return;
+        file->setExportMetadata(QJsonObject{{"title",title.text()},{"artist",artist.text()},{"players",players.value()}});
+        _settings->setValue("export/editor",editor.text()); _settings->setValue("export/name_pattern",pattern.text());
+        file->setSaved(false); markEdited();
+    });
+
     QAction *exportArrangementAction = new QAction(tr("Export MIDI..."), this);
     exportArrangementAction->setToolTip(tr("Render MIDI region positions into a separate standard MIDI file"));
     connect(exportArrangementAction, &QAction::triggered, this, [this]() {
         if (!file || !requireAssignedNoteTracks(file, this)) return;
+        const QStringList outOfRange=_arrangementWidget ? _arrangementWidget->outOfRangeTracks() : QStringList{};
+        if (!outOfRange.isEmpty()) {
+            QMessageBox warning(QMessageBox::Warning,tr("Notes Outside C3–C6"),
+                tr("These tracks contain out-of-range notes:\n%1\n\nExport them unchanged?").arg(outOfRange.join('\n')),
+                QMessageBox::NoButton,this);
+            auto *proceed=warning.addButton(tr("Export Anyway"),QMessageBox::AcceptRole);
+            auto *cancel=warning.addButton(QMessageBox::Cancel); warning.setDefaultButton(cancel);
+            warning.exec(); if(warning.clickedButton()!=proceed) return;
+        }
         QString directory = file->path().isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) : QFileInfo(file->path()).absolutePath();
         if (xiv::insideInstallFolder(directory)) directory=QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-        const QString name = file->path().isEmpty() ? tr("Untitled") : QFileInfo(file->path()).completeBaseName();
+        const auto metadata=file->exportMetadata();
+        const QString title=metadata.value("title").toString(file->path().isEmpty()?tr("Untitled"):QFileInfo(file->path()).completeBaseName());
+        const QString name=xiv::exportBaseName(_settings->value("export/name_pattern","{title}").toString(),
+            title,metadata.value("artist").toString(),_settings->value("export/editor").toString(),metadata.value("players").toInt());
         const QString path = chooseSongDestination(this, tr("Export MIDI"),
-            QDir(directory).filePath(name + " - Export.mid"), ".mid", file->sourcePath());
+            QDir(directory).filePath(name + ".mid"), ".mid", file->sourcePath());
         if (path.isEmpty()) return;
         if (!file->saveArrangedMidi(path))
             QMessageBox::warning(this, tr("Export MIDI"),
@@ -5753,7 +5851,8 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
         pasteToChannelAction->setChecked(i < 0);
     }
     editMB->addAction(_pasteAction);
-    editMB->addMenu(_pasteOptionsMenu);
+    // Paste always uses the selected destination region/track.
+    _pasteOptionsMenu->menuAction()->setVisible(false);
 
     editMB->addSeparator();
 
@@ -6204,14 +6303,16 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     const QStringList chordVoiceLabels = {
         tr("Keep Highest Note per Chord"),
         tr("Keep Lowest Note per Chord"),
-        tr("Keep Inner Notes (Remove Outer Voices)")
+        tr("Keep Inner Notes (Remove Outer Voices)"), tr("Remove Highest Note Only"),
+        tr("Remove Inner Notes Only"), tr("Remove Lowest Note Only")
     };
     const QStringList chordVoiceIds = {
         QStringLiteral("ffxiv_keep_highest"),
         QStringLiteral("ffxiv_keep_lowest"),
-        QStringLiteral("ffxiv_keep_inner")
+        QStringLiteral("ffxiv_keep_inner"), QStringLiteral("ffxiv_remove_highest"),
+        QStringLiteral("ffxiv_remove_inner"), QStringLiteral("ffxiv_remove_lowest")
     };
-    for (int mode = 0; mode < 3; ++mode) {
+    for (int mode : {0, 2, 1, 3, 4, 5}) {
         QAction *action = chordVoiceMenu->addAction(chordVoiceLabels.at(mode));
         action->setToolTip(tr("Permanently delete unwanted notes from selected chords. Drum notes are protected."));
         connect(action, &QAction::triggered, this, [this, mode]() { filterChordVoices(mode); });
@@ -6596,10 +6697,17 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
     if (rightSplitter) rightSplitter->hide();
     viewMB->addSeparator();
 
-    viewMB->addAction(_allTracksVisible);
-    viewMB->addAction(_allChannelsVisible);
-    viewMB->addAction(_allTracksInvisible);
-    viewMB->addAction(_allChannelsInvisible);
+    auto *toggleVisibility = viewMB->addAction(tr("Show/Hide All Tracks and Channels"));
+    connect(toggleVisibility, &QAction::triggered, this, [this]() {
+        if (!file) return;
+        bool hidden=false;
+        for (auto *track:*file->tracks()) hidden |= track->hidden();
+        for (int i=0;i<16;++i) hidden |= !ChannelVisibilityManager::instance().isChannelVisible(i);
+        if(hidden) { allTracksVisible(); allChannelsVisible(); }
+        else { allTracksInvisible(); allChannelsInvisible(); }
+        updateAll();
+    });
+    _actionMap["xiv_toggle_all_visible"] = toggleVisibility;
 
     viewMB->addSeparator();
 
@@ -6894,26 +7002,6 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
 
     playbackMB->addSeparator();
 
-    QAction *backMarkerAction = new QAction(tr("Previous Marker"), this);
-    Appearance::setActionIcon(backMarkerAction, ":/run_environment/graphics/tool/back_marker.png");
-    QList<QKeySequence> backMarkerActionShortcuts;
-    backMarkerAction->setShortcut(QKeySequence(QKeyCombination(Qt::ALT, Qt::Key_Comma)));
-    _defaultShortcuts["back_marker"] = QList<QKeySequence>() << backMarkerAction->shortcut();
-    connect(backMarkerAction, SIGNAL(triggered()), this, SLOT(backMarker()));
-    playbackMB->addAction(backMarkerAction);
-    _actionMap["back_marker"] = backMarkerAction;
-
-    QAction *forwMarkerAction = new QAction(tr("Next Marker"), this);
-    Appearance::setActionIcon(forwMarkerAction, ":/run_environment/graphics/tool/forward_marker.png");
-    QList<QKeySequence> forwMarkerActionShortcuts;
-    forwMarkerAction->setShortcut(QKeySequence(QKeyCombination(Qt::ALT, Qt::Key_Period)));
-    _defaultShortcuts["forward_marker"] = QList<QKeySequence>() << forwMarkerAction->shortcut();
-    connect(forwMarkerAction, SIGNAL(triggered()), this, SLOT(forwardMarker()));
-    playbackMB->addAction(forwMarkerAction);
-    _actionMap["forward_marker"] = forwMarkerAction;
-
-    playbackMB->addSeparator();
-
     QMenu *speedMenu = new QMenu(tr("Playback Speed..."));
     Appearance::setActionIcon(speedMenu->menuAction(), ":/run_environment/graphics/tool/playback-speed.png");
     connect(speedMenu, SIGNAL(triggered(QAction*)), this, SLOT(setSpeed(QAction*)));
@@ -6943,10 +7031,17 @@ QWidget *MainWindow::setupActions(QWidget *parent) {
 
     playbackMB->addSeparator();
 
-    playbackMB->addAction(_allTracksAudible);
-    playbackMB->addAction(_allChannelsAudible);
-    playbackMB->addAction(_allTracksMute);
-    playbackMB->addAction(_allChannelsMute);
+    auto *toggleAudible = playbackMB->addAction(tr("Mute/Unmute All Tracks and Channels"));
+    connect(toggleAudible, &QAction::triggered, this, [this]() {
+        if (!file) return;
+        bool muted=false;
+        for (auto *track:*file->tracks()) muted |= track->muted();
+        for(int i=0;i<16;++i) muted |= file->channel(i)->mute();
+        if(muted) { unmuteAllTracks(); unmuteAllChannels(); }
+        else { muteAllTracks(); muteAllChannels(); }
+        updateAll();
+    });
+    _actionMap["xiv_toggle_all_audible"] = toggleAudible;
 
     playbackMB->addSeparator();
 
@@ -7545,9 +7640,7 @@ QWidget *MainWindow::createCustomToolbar(QWidget *parent) {
                     action->setToolTip(tr("Paste events at cursor position"));
                     Appearance::setActionIcon(action, ":/run_environment/graphics/tool/paste.png");
                     connect(action, SIGNAL(triggered()), this, SLOT(paste()));
-                    if (_pasteOptionsMenu) {
-                        action->setMenu(_pasteOptionsMenu);
-                    }
+
                 } else {
                     // Create a placeholder action if the real one doesn't exist
                     action = new QAction(actionId, currentToolBar);
@@ -7649,9 +7742,7 @@ QWidget *MainWindow::createCustomToolbar(QWidget *parent) {
                     action->setToolTip(tr("Paste events at cursor position"));
                     Appearance::setActionIcon(action, ":/run_environment/graphics/tool/paste.png");
                     connect(action, SIGNAL(triggered()), this, SLOT(paste()));
-                    if (_pasteOptionsMenu) {
-                        action->setMenu(_pasteOptionsMenu);
-                    }
+
                 } else {
                     // Create a placeholder action if the real one doesn't exist
                     action = new QAction(actionId, toolBar);
@@ -8042,14 +8133,12 @@ QList<ToolbarActionInfo> MainWindow::getDefaultActionsForPlaceholder() {
     actions << ToolbarActionInfo{"delete_overlaps", "Delete Overlaps", ":/run_environment/graphics/tool/deleteoverlap.png", nullptr, true, false, "Tools"};
     actions << ToolbarActionInfo{"size_change", "Size Change", ":/run_environment/graphics/tool/change_size.png", nullptr, true, false, "Tools"};
     actions << ToolbarActionInfo{"back_to_begin", "Back to Begin", ":/run_environment/graphics/tool/back_to_begin.png", nullptr, true, false, "Playback"};
-    actions << ToolbarActionInfo{"back_marker", "Back Marker", ":/run_environment/graphics/tool/back_marker.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"back", "Back", ":/run_environment/graphics/tool/back.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"play", "Play", ":/run_environment/graphics/tool/play.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"pause", "Pause", ":/run_environment/graphics/tool/pause.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"stop", "Stop", ":/run_environment/graphics/tool/stop.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"record", "Record", ":/run_environment/graphics/tool/record.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"forward", "Forward", ":/run_environment/graphics/tool/forward.png", nullptr, true, false, "Playback"};
-    actions << ToolbarActionInfo{"forward_marker", "Forward Marker", ":/run_environment/graphics/tool/forward_marker.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"metronome", "Metronome", ":/run_environment/graphics/tool/metronome.png", nullptr, true, false, "Playback"};
     actions << ToolbarActionInfo{"align_left", "Align Left", ":/run_environment/graphics/tool/align_left.png", nullptr, true, false, "Tools"};
     actions << ToolbarActionInfo{"equalize", "Equalize", ":/run_environment/graphics/tool/equalize.png", nullptr, true, false, "Tools"};
@@ -8247,6 +8336,14 @@ void MainWindow::checkEnableActionsForSelection() {
             if (auto *action = _actionMap.value(id)) action->setEnabled(projected);
         }
     }
+    if(mw_matrixWidget && mw_matrixWidget->regionViewEnabled()) {
+        const bool selected=mw_matrixWidget->hasProjectedSelection() && !MidiInput::recording();
+        for(const auto *id:{"copy","ffxiv_keep_highest","ffxiv_keep_inner","ffxiv_keep_lowest",
+                           "ffxiv_remove_highest","ffxiv_remove_inner","ffxiv_remove_lowest"})
+            if(auto *action=_actionMap.value(id)) action->setEnabled(selected);
+        if(_arrangementWidget && _arrangementWidget->hasFocus() && _arrangementWidget->selectedRegionId())
+            _actionMap.value("copy")->setEnabled(true);
+    }
     if (_moveSelectedEventsToChannelMenu) {
         _moveSelectedEventsToChannelMenu->setEnabled(enabled);
     }
@@ -8272,7 +8369,9 @@ void MainWindow::copiedEventsChanged() {
     // If shared clipboard is available, always enable paste
     // The paste operation itself will handle whether there's data or not
     SharedClipboard *clipboard = SharedClipboard::instance();
-    bool sharedClipboardAvailable = clipboard->hasData();
+    bool sharedClipboardAvailable = clipboard->hasData() ||
+            (QApplication::clipboard()->mimeData() && (QApplication::clipboard()->mimeData()->hasFormat(xiv::regionMime) ||
+             QApplication::clipboard()->mimeData()->hasFormat("application/x-xivms-tempo-v1")));
 
     bool enable = EventTool::copiedEvents->size() > 0 || sharedClipboardAvailable;
 
