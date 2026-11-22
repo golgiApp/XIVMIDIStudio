@@ -96,11 +96,6 @@ class ArrangementWidget final : public QWidget {
     };
 
     enum class RegionDragMode { Move, Duplicate, TrimLeft, TrimRight, Loop };
-    struct RenderedPreview {
-        std::vector<xiv::RenderedRegionNote> notes;
-        int lowestPitch = 127;
-        int highestPitch = 0;
-    };
 public:
     explicit ArrangementWidget(QWidget *parent = nullptr) : QWidget(parent) {
         auto *edgeScroll = new QTimer(this);
@@ -626,7 +621,6 @@ public:
         if (_regionHistoryRefreshPending && _file && *_file->tracks() != _regionTracks)
             return;
         _preview.clear();
-        _renderedPreviewDirty = true;
         _programCacheTick = std::numeric_limits<int>::min();
         _programCache.clear();
         if (!_file) {
@@ -879,7 +873,6 @@ protected:
         }
 
         const auto &tracks = *_file->tracks();
-        rebuildRenderedPreviewCache();
         const int programTick = _file->cursorTick();
         if (_programCacheTick != programTick || _programCache.size() != tracks.size()) {
             _programCache.clear();
@@ -1016,11 +1009,22 @@ protected:
             // The same region renderer used by audio/export now drives the
             // arrangement preview.  Keep notes can visibly sustain past a
             // region boundary; Shorten notes stop; Split notes retrigger.
-            const auto &rendered = _renderedPreview[t];
-            const auto &renderedNotes = rendered.notes;
+            std::vector<xiv::SourceRegionNote> sourceNotes;
+            const auto &notes = _preview[t];
+            sourceNotes.reserve(static_cast<std::size_t>(notes.size()));
+            int lowestPitch = 127, highestPitch = 0;
+            int previewId = 1;
+            for (const auto &n : notes) {
+                if (n.endTick <= n.beginTick) continue;
+                sourceNotes.push_back({previewId++, i, n.beginTick, n.endTick,
+                                       n.pitch, 100, 0});
+            }
+            const auto renderedNotes = xiv::renderRegionNotes(sourceNotes, _regions, i);
             if (!renderedNotes.empty()) {
-                const int lowestPitch = rendered.lowestPitch;
-                const int highestPitch = rendered.highestPitch;
+                for (const auto &note : renderedNotes) {
+                    lowestPitch = std::min(lowestPitch, note.pitch);
+                    highestPitch = std::max(highestPitch, note.pitch);
+                }
                 const int pitchRange = std::max(1, highestPitch - lowestPitch);
                 QColor previewAccent = c.isValid() ? c : QColor("#7EA4D4");
                 int h = 0, s = 0, l = 0, a = 255;
@@ -1963,32 +1967,6 @@ protected:
     }
 
 private:
-    void rebuildRenderedPreviewCache() {
-        if (!_renderedPreviewDirty || !_file) return;
-        _renderedPreview.clear();
-        const auto &tracks = *_file->tracks();
-        for (int i = 0; i < tracks.size(); ++i) {
-            MidiTrack *track = tracks.at(i);
-            const auto &source = _preview[track];
-            std::vector<xiv::SourceRegionNote> sourceNotes;
-            sourceNotes.reserve(static_cast<std::size_t>(source.size()));
-            int previewId = 1;
-            for (const auto &note : source) {
-                if (note.endTick <= note.beginTick) continue;
-                sourceNotes.push_back({previewId++, i, note.beginTick, note.endTick,
-                                       note.pitch, note.velocity, note.channel});
-            }
-            RenderedPreview cached;
-            cached.notes = xiv::renderRegionNotes(sourceNotes, _regions, i);
-            for (const auto &note : cached.notes) {
-                cached.lowestPitch = std::min(cached.lowestPitch, note.pitch);
-                cached.highestPitch = std::max(cached.highestPitch, note.pitch);
-            }
-            _renderedPreview.insert(track, std::move(cached));
-        }
-        _renderedPreviewDirty = false;
-    }
-
     // Anchor the painted handle and its hit target to the actual region end.
     // A region that continues beyond the viewport has no visible end handle.
     static const QCursor &loopCursor() {
@@ -2064,7 +2042,6 @@ private:
             w->_regionHistoryRefreshPending = true;
             w->pendingNoteSelection = old->_restoreNotes;
             w->_regions = old->_regionsAtCapture;
-            w->_renderedPreviewDirty = true;
             w->_programCacheTick = std::numeric_limits<int>::min();
             w->_programCache.clear();
             w->_sections = old->_sectionsAtCapture;
@@ -3550,7 +3527,6 @@ private:
     // projected during playback/export; neither trim nor duplication edits
     // source MIDI note-on/off pairs.
     void finishRegionEdit(ProtocolEntry *before, const QString &description) {
-        _renderedPreviewDirty = true;
         const auto publish = [this]() { _file->setRegionLayout(_regions); };
         if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
         else publish();
@@ -3728,8 +3704,6 @@ private:
     MidiTrack *_selected = nullptr;
     MidiTrack *_solo = nullptr;
     QHash<MidiTrack *, QVector<PreviewNote>> _preview;
-    QHash<MidiTrack *, RenderedPreview> _renderedPreview;
-    bool _renderedPreviewDirty = true;
     QHash<MidiTrack *, int> _programCache;
     int _programCacheTick = std::numeric_limits<int>::min();
     int _originMs = 0;
