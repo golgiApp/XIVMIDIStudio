@@ -470,6 +470,27 @@ public:
     }
     // Validate sidecar records before replacing the active model. A stale or
     // malformed layout must never partially install into the live UI.
+    // Keep edited regions attached to surviving track identities. A missing
+    // track is removed; an empty managed track must stay empty after remapping.
+    bool remapTracks(const std::vector<int> &destinations, int trackCount) {
+        MidiRegionModel mapped;
+        std::vector<MidiRegion> records;
+        for (int old : _managedTracks) {
+            if (old < 0 || old >= static_cast<int>(destinations.size())) return false;
+            if (destinations[old] >= trackCount || destinations[old] < -1) return false;
+            if (destinations[old] >= 0) mapped.markManagedTrack(destinations[old]);
+        }
+        for (auto region : _regions) {
+            if (region.trackIndex < 0 || region.trackIndex >= static_cast<int>(destinations.size())) return false;
+            region.trackIndex = destinations[region.trackIndex];
+            if (region.trackIndex >= 0) records.push_back(std::move(region));
+        }
+        if (!mapped.replaceValidated(records, trackCount)) return false;
+        mapped._nextId = std::max(mapped._nextId, _nextId);
+        *this = std::move(mapped);
+        return true;
+    }
+
     bool replaceValidated(const std::vector<MidiRegion> &incoming, int trackCount) {
         if (trackCount < 0 || incoming.size() > 100000) return false;
         std::vector<int> ids;

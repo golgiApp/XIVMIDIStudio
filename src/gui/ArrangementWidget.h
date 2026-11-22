@@ -483,10 +483,12 @@ public:
             connect(file->protocol(), &Protocol::actionFinished, this,
                     [this, file]() {
                         if (_file != file) return;
-                        const bool refreshSelection = _regionHistoryRefreshPending;
+                        bool refreshSelection = _regionHistoryRefreshPending;
                         _regionHistoryRefreshPending = false;
                         _file->calcMaxTime();
                         rebuildPreview();
+                        refreshSelection |= _regionHistoryRefreshPending;
+                        _regionHistoryRefreshPending = false;
                         if (refreshSelection && selectTrackRequested)
                             selectTrackRequested(_selected);
                         if (refreshSelection && regionViewChanged) regionViewChanged();
@@ -503,6 +505,29 @@ public:
     }
 
     void setTrackLayoutEditing(bool editing) { _trackLayoutEditing = editing; }
+    // Freeze the arranged result before native MIDI events are reassigned.
+    // Otherwise a merge can revive notes that were removed from a region.
+    bool prepareTrackMerge(MidiTrack *source, MidiTrack *destination) {
+        if (!_file || !_regionsReady) return false;
+        const int from = _file->tracks()->indexOf(source);
+        const int to = _file->tracks()->indexOf(destination);
+        if (from < 0 || to < 0 || from == to) return false;
+        auto updated = _regions;
+        std::set<int> ids;
+        for (const auto &region : updated.regions())
+            if (region.trackIndex == from || region.trackIndex == to) ids.insert(region.id);
+        const auto rendered = xiv::renderRegionNotes(sourceNotesFor(ids), updated);
+        if (!ids.empty() && !xiv::materializeProjectedRegionIds(updated, rendered, ids, _file->numTracks())) return false;
+        std::vector<int> mapping;
+        for (int i = 0; i < _file->numTracks(); ++i) mapping.push_back(i == from ? to : i);
+        if (!updated.remapTracks(mapping, _file->numTracks())) return false;
+        updated.markManagedTrack(to);
+        auto *before = _regionHistory.copy();
+        _regions = std::move(updated);
+        _renderedPreview.clear();
+        _file->protocol()->enterUndoStep(new ProtocolItem(before, &_regionHistory));
+        return true;
+    }
 
     void recordTrackLayoutChange(const QList<MidiTrack *> &oldTracks, int source = -1,
                                  int destination = -1, int channel = -1) {
@@ -623,6 +648,7 @@ public:
         if (_regionHistoryRefreshPending && _file && *_file->tracks() != _regionTracks)
             return;
         _preview.clear();
+        _renderedPreview.clear();
         _programCacheTick = std::numeric_limits<int>::min();
         _programCache.clear();
         if (!_file) {
@@ -653,17 +679,20 @@ public:
         const auto &tracks = *_file->tracks();
         const int count = tracks.size();
         if (!_regionsReady || tracks != _regionTracks) {
-            const bool appendOnly = _regionsReady && count >= _regionTracks.size() &&
-                std::equal(_regionTracks.cbegin(), _regionTracks.cend(), tracks.cbegin());
-            const int firstNewTrack = appendOnly ? _regionTracks.size() : 0;
-            if (!appendOnly) {
-                // An index-based layout cannot safely follow reordered or removed tracks.
+            const auto previousTracks = _regionTracks;
+            if (_regionsReady) {
+                std::vector<int> mapping;
+                for (auto *track : previousTracks) mapping.push_back(tracks.indexOf(track));
+                if (!_regions.remapTracks(mapping, count)) return;
+                _regionHistoryRefreshPending = true;
+            } else {
                 _regions.clear();
                 _selectedRegionId = 0;
                 _selectedRegionIds.clear();
             }
-            for (int i = firstNewTrack; i < count; ++i) {
+            for (int i = 0; i < count; ++i) {
                 MidiTrack *track = _file->tracks()->at(i);
+                if (_regionsReady && previousTracks.contains(track)) continue;
                 const auto &notes = _preview[track];
                 if (notes.isEmpty()) continue;
                 int lastTick = notes.first().endTick;

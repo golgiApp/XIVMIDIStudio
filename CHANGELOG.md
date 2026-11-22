@@ -6,6 +6,7 @@ https://github.com/golgiApp/XIVMIDIStudio/releases
 
 ## [0.4.3] - 2026-11-20
 
+- Preserve edited region notes and deliberately empty tracks when tracks are merged, removed, or reordered. Track merging now captures the arranged notes before moving source MIDI events; preview caches refresh after source edits.
 - Improve responsiveness in dense projects by caching instrument lookups, skipping off-screen drawing work, reducing redundant control refreshes, and decoupling visual playhead updates from the MIDI scheduler. Region-note previews use thin, separated strokes so repeated attacks remain readable.
 - Add a preview-based estimated voice readout: yellow 12–15, red 16+, release tails included, SoundFont layers grouped, metronome excluded. Master volume is applied after synthesis and never changes exported MIDI.
 - Use project names in window/taskbar titles, reorder Inspector sections, enlarge scrollbars, restore playhead repainting, and use regular region/tempo pointers.

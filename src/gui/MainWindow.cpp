@@ -4907,8 +4907,17 @@ void MainWindow::cloneTrack(MidiTrack *source) {
 
 void MainWindow::mergeTrack(MidiTrack *source, MidiTrack *destination) {
     if (!file || !source || !destination || source == destination) return;
+    if (MidiPlayer::isPlaying() || MidiInput::recording()) return;
 
+    const auto oldTracks = *file->tracks();
     file->protocol()->startNewAction(tr("Merge Track"));
+    if (_arrangementWidget) {
+        if (!_arrangementWidget->prepareTrackMerge(source, destination)) {
+            file->protocol()->endAction();
+            return;
+        }
+        _arrangementWidget->setTrackLayoutEditing(true);
+    }
 
     // Deselect events from source track
     foreach(MidiEvent* event, Selection::instance()->selectedEvents()) {
@@ -4937,6 +4946,10 @@ void MainWindow::mergeTrack(MidiTrack *source, MidiTrack *destination) {
         QMessageBox::warning(this, tr("Error"), tr("The selected track can't be removed!"));
     }
 
+    if (_arrangementWidget) {
+        _arrangementWidget->recordTrackLayoutChange(oldTracks);
+        _arrangementWidget->setTrackLayoutEditing(false);
+    }
     file->protocol()->endAction();
     updateAll();
 }
