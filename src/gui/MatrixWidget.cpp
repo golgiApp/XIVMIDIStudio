@@ -236,8 +236,14 @@ void MatrixWidget::timeMsChanged(int ms, bool ignoreLocked) {
             if (finalStartTime > maxStart) finalStartTime = maxStart;
             if (finalStartTime < 0) finalStartTime = 0;
 
-            // Apply new position ONLY if it actually changed
-            if (finalStartTime != startTimeX) {
+            // Millisecond changes smaller than one screen pixel do not alter
+            // the picture, but invalidating the cached Piano Roll for them is
+            // expensive on dense files. Accumulate until a visible move is due.
+            const int timeSpan = std::max(1, endTimeX - startTimeX);
+            const int pixelShift = static_cast<int>(
+                std::abs(static_cast<int64_t>(finalStartTime) - startTimeX) *
+                std::max(1, width() - lineNameWidth) / timeSpan);
+            if (finalStartTime != startTimeX && pixelShift >= 1) {
                 startTimeX = finalStartTime;
                 endTimeX = startTimeX + viewportDurationMs;
                 registerRelayout();
@@ -876,6 +882,7 @@ void MatrixWidget::paintEvent(QPaintEvent *event) {
         painter->setPen(Qt::NoPen);
         painter->setBrush(Qt::NoBrush);
         for (const auto &n : _regionViewNotes) {
+            if (n.endTick < startTick || n.startTick > endTick) continue;
             const int id = n.ownedNoteId ? n.ownedNoteId : n.sourceId;
             const bool selected = allTracksEditing() ? _allSelection.count(allNoteId(n))
                                                  : _regionSelection.count(id);

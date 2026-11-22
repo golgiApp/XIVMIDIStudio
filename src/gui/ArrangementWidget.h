@@ -11,6 +11,7 @@
 #include <QWidget>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
 #include "TrackInstrumentIcon.h"
 #include "RegionClipboardIO.h"
 #include "../region/ProjectedRegionEdits.h"
@@ -95,6 +96,11 @@ class ArrangementWidget final : public QWidget {
     };
 
     enum class RegionDragMode { Move, Duplicate, TrimLeft, TrimRight, Loop };
+    struct RenderedPreview {
+        std::vector<xiv::RenderedRegionNote> notes;
+        int lowestPitch = 127;
+        int highestPitch = 0;
+    };
 public:
     explicit ArrangementWidget(QWidget *parent = nullptr) : QWidget(parent) {
         auto *edgeScroll = new QTimer(this);
@@ -620,6 +626,9 @@ public:
         if (_regionHistoryRefreshPending && _file && *_file->tracks() != _regionTracks)
             return;
         _preview.clear();
+        _renderedPreviewDirty = true;
+        _programCacheTick = std::numeric_limits<int>::min();
+        _programCache.clear();
         if (!_file) {
             updateGeometry();
             update();
@@ -828,7 +837,7 @@ protected:
         refreshHorizontalRange();
     }
 
-    void paintEvent(QPaintEvent *) override {
+    void paintEvent(QPaintEvent *event) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, false);
         p.fillRect(rect(), QColor("#202329"));
@@ -841,6 +850,7 @@ protected:
         // time-signature changes (no hardcoded 4/4 assumption).
         const int tpq = std::max(1, _file->ticksPerQuarter());
         const int endMs = _originMs + int(std::max(0, width() - headerWidth) / _scale);
+        const int visibleStartTick = std::max(0, _file->tick(_originMs));
         const int endTick = std::max(0, _file->tick(endMs));
         // Cache the grid positions once, then draw them after EACH lane's
         // background. Previously the grid was painted here and the opaque
@@ -849,7 +859,7 @@ protected:
         QVector<int> subBeatGridXs;
         QVector<QPair<int, int>> measureMarks;
         int barStart = 0, barEnd = 0;
-        int bar = _file->measure(std::max(0, _file->tick(_originMs)), &barStart, &barEnd);
+        int bar = _file->measure(visibleStartTick, &barStart, &barEnd);
         for (int step = 0; step < 1000 && barStart <= endTick; ++step) {
             const int x = xForMs(_file->msOfTick(barStart));
             if (x >= headerWidth && x <= width())
@@ -869,11 +879,21 @@ protected:
         }
 
         const auto &tracks = *_file->tracks();
+        rebuildRenderedPreviewCache();
+        const int programTick = _file->cursorTick();
+        if (_programCacheTick != programTick || _programCache.size() != tracks.size()) {
+            _programCache.clear();
+            for (auto *track : tracks)
+                if (track) _programCache.insert(track, track->progAtTick(programTick));
+            _programCacheTick = programTick;
+        }
         for (int i = 0; i < tracks.size(); ++i) {
             MidiTrack *t = tracks.at(i);
             if (!t) continue;
             const int y = rulerHeight() + i * laneHeight;
             if (y > height()) break;
+            if (event && y + laneHeight < event->rect().top()) continue;
+            if (event && y > event->rect().bottom()) break;
             const bool chosen = t == _selected;
             const QColor c = t->color() ? *t->color() : QColor("#7EA4D4");
             p.fillRect(0, y, width(), laneHeight, chosen ? QColor("#363D48") :
@@ -914,18 +934,18 @@ protected:
 
             // Resolve this track's own program; shared channels may contain
             // program events belonging to other tracks.
-            const int program = t->progAtTick(_file->cursorTick());
+            const int program = _programCache.value(t, 0);
             drawButton(p, instrumentRect(y), TrackControl::Instrument, false, QColor("#45647F"), program);
             drawButton(p, visibilityRect(y), TrackControl::Visibility, !t->hidden(), QColor("#1767A4"));
             drawButton(p, muteRect(y), TrackControl::Mute, t->muted(), QColor("#A83C4B"));
             drawButton(p, soloRect(y), TrackControl::Solo, t == _solo, QColor("#9B761D"));
             drawButton(p, actionsRect(y), TrackControl::More, false, QColor("#55748E"));
 
-            const auto &notes = _preview[t];
             // Draw region backgrounds first; note previews are rendered later
             // from the same region schedule as playback and arranged export.
             for (const auto &region : _regions.regions()) {
                 if (region.trackIndex != i) continue;
+                if (region.endTick() < visibleStartTick || region.startTick > endTick) continue;
                 const int x0 = std::max(headerWidth + 3,
                     xForMs(_file->msOfTick(region.startTick)));
                 const int x1 = std::min(width() - 2,
@@ -996,21 +1016,11 @@ protected:
             // The same region renderer used by audio/export now drives the
             // arrangement preview.  Keep notes can visibly sustain past a
             // region boundary; Shorten notes stop; Split notes retrigger.
-            std::vector<xiv::SourceRegionNote> sourceNotes;
-            sourceNotes.reserve(static_cast<std::size_t>(notes.size()));
-            int lowestPitch = 127, highestPitch = 0;
-            int previewId = 1;
-            for (const auto &n : notes) {
-                if (n.endTick <= n.beginTick) continue;
-                sourceNotes.push_back({previewId++, i, n.beginTick, n.endTick,
-                                       n.pitch, 100, 0});
-            }
-            const auto renderedNotes = xiv::renderRegionNotes(sourceNotes, _regions, i);
+            const auto &rendered = _renderedPreview[t];
+            const auto &renderedNotes = rendered.notes;
             if (!renderedNotes.empty()) {
-                for (const auto &note : renderedNotes) {
-                    lowestPitch = std::min(lowestPitch, note.pitch);
-                    highestPitch = std::max(highestPitch, note.pitch);
-                }
+                const int lowestPitch = rendered.lowestPitch;
+                const int highestPitch = rendered.highestPitch;
                 const int pitchRange = std::max(1, highestPitch - lowestPitch);
                 QColor previewAccent = c.isValid() ? c : QColor("#7EA4D4");
                 int h = 0, s = 0, l = 0, a = 255;
@@ -1025,6 +1035,7 @@ protected:
                 p.setPen(Qt::NoPen);
                 p.setBrush(previewAccent.lighter(145));
                 for (const auto &note : renderedNotes) {
+                    if (note.endTick < visibleStartTick || note.startTick > endTick) continue;
                     const int sx = std::max(headerWidth + 4,
                         xForMs(_file->msOfTick(note.startTick)));
                     const int ex = std::min(width() - 3,
@@ -1164,6 +1175,8 @@ protected:
             for (int i = 0; i < tracks.size(); ++i) {
                 const int y = rulerHeight() + i * laneHeight;
                 if (y >= height()) break;
+                if (event && y + laneHeight < event->rect().top()) continue;
+                if (event && y > event->rect().bottom()) break;
                 p.setBrush(tracks.at(i) == _selected ? QColor("#FFFFFF") :
                            QColor("#FFDD75"));
                 p.drawEllipse(QPoint(x, y + laneHeight / 2), 3, 3);
@@ -1950,6 +1963,32 @@ protected:
     }
 
 private:
+    void rebuildRenderedPreviewCache() {
+        if (!_renderedPreviewDirty || !_file) return;
+        _renderedPreview.clear();
+        const auto &tracks = *_file->tracks();
+        for (int i = 0; i < tracks.size(); ++i) {
+            MidiTrack *track = tracks.at(i);
+            const auto &source = _preview[track];
+            std::vector<xiv::SourceRegionNote> sourceNotes;
+            sourceNotes.reserve(static_cast<std::size_t>(source.size()));
+            int previewId = 1;
+            for (const auto &note : source) {
+                if (note.endTick <= note.beginTick) continue;
+                sourceNotes.push_back({previewId++, i, note.beginTick, note.endTick,
+                                       note.pitch, note.velocity, note.channel});
+            }
+            RenderedPreview cached;
+            cached.notes = xiv::renderRegionNotes(sourceNotes, _regions, i);
+            for (const auto &note : cached.notes) {
+                cached.lowestPitch = std::min(cached.lowestPitch, note.pitch);
+                cached.highestPitch = std::max(cached.highestPitch, note.pitch);
+            }
+            _renderedPreview.insert(track, std::move(cached));
+        }
+        _renderedPreviewDirty = false;
+    }
+
     // Anchor the painted handle and its hit target to the actual region end.
     // A region that continues beyond the viewport has no visible end handle.
     static const QCursor &loopCursor() {
@@ -2025,6 +2064,9 @@ private:
             w->_regionHistoryRefreshPending = true;
             w->pendingNoteSelection = old->_restoreNotes;
             w->_regions = old->_regionsAtCapture;
+            w->_renderedPreviewDirty = true;
+            w->_programCacheTick = std::numeric_limits<int>::min();
+            w->_programCache.clear();
             w->_sections = old->_sectionsAtCapture;
             w->_sectionPressed = false;
             w->_selectedRegionId = old->_selectedAtCapture;
@@ -3508,6 +3550,7 @@ private:
     // projected during playback/export; neither trim nor duplication edits
     // source MIDI note-on/off pairs.
     void finishRegionEdit(ProtocolEntry *before, const QString &description) {
+        _renderedPreviewDirty = true;
         const auto publish = [this]() { _file->setRegionLayout(_regions); };
         if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
         else publish();
@@ -3685,6 +3728,10 @@ private:
     MidiTrack *_selected = nullptr;
     MidiTrack *_solo = nullptr;
     QHash<MidiTrack *, QVector<PreviewNote>> _preview;
+    QHash<MidiTrack *, RenderedPreview> _renderedPreview;
+    bool _renderedPreviewDirty = true;
+    QHash<MidiTrack *, int> _programCache;
+    int _programCacheTick = std::numeric_limits<int>::min();
     int _originMs = 0;
     int _playheadMs = -1;
     double _scale = 0.065; // pixels per millisecond

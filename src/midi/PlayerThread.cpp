@@ -35,7 +35,10 @@
 #include <limits>
 
 #define INTERVAL_TIME 15
-#define TIMEOUTS_PER_SIGNAL 1
+// Keep MIDI scheduling at 15 ms, but do not make the UI repaint at the same
+// rate. Two scheduler ticks give the playheads a smooth ~33 fps update while
+// leaving substantially more time for editing and audio work on the GUI thread.
+#define TIMEOUTS_PER_SIGNAL 2
 
 std::atomic<std::uint64_t> PlayerThread::cycleBounds{0};
 

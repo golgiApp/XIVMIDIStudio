@@ -105,6 +105,7 @@
 #include <array>
 
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <vector>
 #include "OpenGLMatrixWidget.h"
@@ -1195,8 +1196,17 @@ MainWindow::MainWindow(QString initFile)
         if (file) for(int i=0;i<16;++i) {
             hidden |= !ChannelVisibilityManager::instance().isChannelVisible(i); muted |= file->channel(i)->mute();
         }
-        visibilityAll->setEnabled(file && file->numTracks());
-        audibilityAll->setEnabled(file && file->numTracks());
+        const bool enabled = file && file->numTracks();
+        if (visibilityAll->property("xivStateInitialized").toBool() &&
+            visibilityAll->property("xivHiddenState").toBool() == hidden &&
+            audibilityAll->property("xivMutedState").toBool() == muted &&
+            visibilityAll->property("xivEnabledState").toBool() == enabled) return;
+        visibilityAll->setProperty("xivStateInitialized", true);
+        visibilityAll->setProperty("xivHiddenState", hidden);
+        audibilityAll->setProperty("xivMutedState", muted);
+        visibilityAll->setProperty("xivEnabledState", enabled);
+        visibilityAll->setEnabled(enabled);
+        audibilityAll->setEnabled(enabled);
         visibilityAll->setIcon(xiv::controlIcon(hidden ? xiv::ControlIcon::Hidden : xiv::ControlIcon::Eye));
         audibilityAll->setIcon(xiv::controlIcon(muted ? xiv::ControlIcon::Muted : xiv::ControlIcon::Volume));
         visibilityAll->setToolTip(hidden ? tr("Show all tracks") : tr("Hide all tracks"));
@@ -1214,7 +1224,7 @@ MainWindow::MainWindow(QString initFile)
     });
     auto *globalTrackTimer = new QTimer(trackHeaderActions);
     connect(globalTrackTimer, &QTimer::timeout, this, refreshGlobalTracks);
-    globalTrackTimer->start(100);
+    globalTrackTimer->start(250);
     refreshGlobalTracks();
 
     const auto pinTrackHeader = [this, trackHeaderActions](int top) {
@@ -1594,21 +1604,31 @@ MainWindow::MainWindow(QString initFile)
     bar->addWidget(voicePanel);
     auto *voiceTimer = new QTimer(voicePanel);
     connect(voiceTimer, &QTimer::timeout, this,
-        [this, voicePanel, voiceValue, peak=0, peakMs=0, previousFile=QPointer<MidiFile>()]() mutable {
-        if (previousFile != file) { previousFile=file; peak=0; peakMs=0; }
+        [this, voicePanel, voiceValue, peak=0, peakMs=0,
+         previousFile=QPointer<MidiFile>(), previousCount=std::numeric_limits<int>::min(),
+         previousColor=QString(), previousTip=QString()]() mutable {
+        if (previousFile != file) {
+            previousFile=file; peak=0; peakMs=0;
+            previousCount=std::numeric_limits<int>::min();
+            previousColor.clear(); previousTip.clear();
+        }
         int count=-1;
 #ifdef FLUIDSYNTH_SUPPORT
         if (MidiOutput::isFluidSynthOutput()) count=FluidSynthEngine::instance()->estimatedPerformanceVoices();
 #endif
         if (count>peak) { peak=count; peakMs=MidiPlayer::isPlaying()?MidiPlayer::timeMs():(file?file->msOfTick(file->cursorTick()):0); }
-        voiceValue->setText(count<0 ? QStringLiteral("—") : QString::number(count));
         const auto color=xiv::voiceWarningColor(count);
-        voiceValue->setStyleSheet(QStringLiteral("color:%1; font:15px 'Consolas'; border:0;").arg(color));
-        voicePanel->setToolTip(count<0 ? tr("Voice estimation requires SoundFont playback.") :
+        const QString tip = count<0 ? tr("Voice estimation requires SoundFont playback.") :
             tr("Preview-based estimate, including release tails; SoundFont layers count once. Not a measurement of FFXIV.\nYellow: 12–15. Red: 16+. Advisory only.\nPeak this project session: %1 at %2:%3.")
-            .arg(peak).arg(peakMs/60000).arg((peakMs/1000)%60,2,10,QChar('0')));
+            .arg(peak).arg(peakMs/60000).arg((peakMs/1000)%60,2,10,QChar('0'));
+        if (count != previousCount)
+            voiceValue->setText(count<0 ? QStringLiteral("—") : QString::number(count));
+        if (color != previousColor)
+            voiceValue->setStyleSheet(QStringLiteral("color:%1; font:15px 'Consolas'; border:0;").arg(color));
+        if (tip != previousTip) voicePanel->setToolTip(tip);
+        previousCount=count; previousColor=color; previousTip=tip;
     });
-    voiceTimer->start(50);
+    voiceTimer->start(100);
     bar->addStretch(1);
     auto *autoZoom = new QToolButton(controlBar);
     autoZoom->setText(tr("Fit Tracks"));
@@ -1844,9 +1864,21 @@ MainWindow::MainWindow(QString initFile)
             updatePosition(MidiPlayer::isPlaying() ? MidiPlayer::timeMs() : 0);
         }
     });
-    connect(transportRefresh, &QTimer::timeout, this, [this]() {
-        if (mw_matrixWidget && mw_matrixWidget->regionViewEnabled())
-            checkEnableActionsForSelection();
+    connect(transportRefresh, &QTimer::timeout, this,
+            [this, lastCount=-1, lastRegion=false, lastProjected=false,
+             lastAllTracks=false, lastPlaying=false, lastRecording=false]() mutable {
+        const int count = Selection::instance()->selectedEvents().size();
+        const bool region = mw_matrixWidget && mw_matrixWidget->regionViewEnabled();
+        const bool projected = region && mw_matrixWidget->hasProjectedSelection();
+        const bool allTracks = mw_matrixWidget && mw_matrixWidget->allTracksEditing();
+        const bool playing = MidiPlayer::isPlaying();
+        const bool recording = MidiInput::recording();
+        if (count == lastCount && region == lastRegion && projected == lastProjected &&
+            allTracks == lastAllTracks && playing == lastPlaying &&
+            recording == lastRecording) return;
+        lastCount=count; lastRegion=region; lastProjected=projected;
+        lastAllTracks=allTracks; lastPlaying=playing; lastRecording=recording;
+        checkEnableActionsForSelection();
     });
     transportRefresh->start(100);
 
