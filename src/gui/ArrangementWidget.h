@@ -449,6 +449,7 @@ public:
         _selected = nullptr;
         _trackHeaderSelected = false;
         _preview.clear();
+        _renderedPreview.clear();
         _regions.clear();
         _sections.clear();
         _tempoSelected = -1;
@@ -535,6 +536,7 @@ public:
         if (!updated.replaceValidated(regions, tracks.size())) { delete before; return; }
         _regions = std::move(updated);
         _regionTracks = tracks;
+        _renderedPreview.clear();
         _regionHistoryRefreshPending = true;
         _regionTrackEditPendingSave = true;
         const auto publish = [this]() { _file->setRegionLayout(_regions); };
@@ -691,6 +693,7 @@ public:
     // Capture native arrangement metadata in memory for the next project save.
     // Imported MIDI and legacy sidecars are never modified.
     bool saveRegionLayout(const QString &midiPath = QString()) {
+        _renderedPreview.clear();
         if (!_regionsReady || !_file) return false;
         QJsonObject root;
         root.insert(QStringLiteral("format"), QStringLiteral("XIV Midi Studio regions"));
@@ -1009,17 +1012,21 @@ protected:
             // The same region renderer used by audio/export now drives the
             // arrangement preview.  Keep notes can visibly sustain past a
             // region boundary; Shorten notes stop; Split notes retrigger.
-            std::vector<xiv::SourceRegionNote> sourceNotes;
-            const auto &notes = _preview[t];
-            sourceNotes.reserve(static_cast<std::size_t>(notes.size()));
-            int lowestPitch = 127, highestPitch = 0;
-            int previewId = 1;
-            for (const auto &n : notes) {
-                if (n.endTick <= n.beginTick) continue;
-                sourceNotes.push_back({previewId++, i, n.beginTick, n.endTick,
-                                       n.pitch, 100, 0});
+            auto cached = _renderedPreview.find(t);
+            if (cached == _renderedPreview.end()) {
+                std::vector<xiv::SourceRegionNote> sourceNotes;
+                const auto &notes = _preview[t];
+                sourceNotes.reserve(static_cast<std::size_t>(notes.size()));
+                int previewId = 1;
+                for (const auto &n : notes) {
+                    if (n.endTick <= n.beginTick) continue;
+                    sourceNotes.push_back({previewId++, i, n.beginTick, n.endTick,
+                                           n.pitch, 100, 0});
+                }
+                cached = _renderedPreview.insert(t, xiv::renderRegionNotes(sourceNotes, _regions, i));
             }
-            const auto renderedNotes = xiv::renderRegionNotes(sourceNotes, _regions, i);
+            const auto &renderedNotes = cached.value();
+            int lowestPitch = 127, highestPitch = 0;
             if (!renderedNotes.empty()) {
                 for (const auto &note : renderedNotes) {
                     if (note.endTick < visibleStartTick || note.startTick > endTick) continue;
@@ -2057,6 +2064,7 @@ private:
             w->_regionHistoryRefreshPending = true;
             w->pendingNoteSelection = old->_restoreNotes;
             w->_regions = old->_regionsAtCapture;
+            w->_renderedPreview.clear();
             w->_programCacheTick = std::numeric_limits<int>::min();
             w->_programCache.clear();
             w->_sections = old->_sectionsAtCapture;
@@ -3301,6 +3309,7 @@ private:
         }
         _regions = std::move(updated);
         _regionTracks = *_file->tracks();
+        _renderedPreview.clear();
         _regionTrackEditPendingSave = true;
         _selectedRegionId = keepSource ? id : firstNewRegion;
         _selectedRegionIds = {_selectedRegionId};
@@ -3542,6 +3551,7 @@ private:
     // projected during playback/export; neither trim nor duplication edits
     // source MIDI note-on/off pairs.
     void finishRegionEdit(ProtocolEntry *before, const QString &description) {
+        _renderedPreview.clear();
         const auto publish = [this]() { _file->setRegionLayout(_regions); };
         if (MidiPlayer::isPlaying()) MidiPlayer::playerThread()->editPlayback(publish);
         else publish();
@@ -3705,6 +3715,7 @@ private:
         for (auto it = assignments.begin(); it != assignments.end(); ++it)
             _file->tracks()->at(it.key().toInt())->assignChannel(it.value().toInt());
         _regions = std::move(loaded);
+        _renderedPreview.clear();
         for (const auto &value : root.value(QStringLiteral("sections")).toArray()) {
             const auto row = value.toArray();
             if (row.size() != 3) continue;
@@ -3720,6 +3731,7 @@ private:
     MidiTrack *_solo = nullptr;
     QHash<MidiTrack *, QVector<PreviewNote>> _preview;
     QHash<MidiTrack *, int> _programCache;
+    QHash<MidiTrack *, std::vector<xiv::RenderedRegionNote>> _renderedPreview;
     int _programCacheTick = std::numeric_limits<int>::min();
     int _originMs = 0;
     int _playheadMs = -1;

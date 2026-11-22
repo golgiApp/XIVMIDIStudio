@@ -1549,6 +1549,34 @@ void MatrixWidget::refreshRegionViewNotes() {
     _regionViewIds.clear();
     if (!_regionViewEnabled || !file) return;
     std::vector<xiv::SourceRegionNote> source;
+    // Resolve instrument changes once per refresh, rather than scanning all
+    // MIDI events again for every note. Preserve progAtTick's channel/tie order.
+    std::map<MidiTrack *, std::map<int, int>> programs;
+    std::map<MidiTrack *, int> firstPrograms;
+    for (int channel = 0; channel < 16; ++channel) {
+        const auto *events = file->channelEvents(channel);
+        if (!events) continue;
+        for (auto it = events->cbegin(); it != events->cend(); ++it) {
+            auto *program = dynamic_cast<ProgChangeEvent *>(it.value());
+            if (program && program->track())
+                firstPrograms.emplace(program->track(), program->program());
+        }
+        for (auto it = events->cend(); it != events->cbegin();) {
+            --it;
+            auto *program = dynamic_cast<ProgChangeEvent *>(it.value());
+            if (program && program->track())
+                programs[program->track()].emplace(it.key(), program->program());
+        }
+    }
+    const auto programAt = [&](MidiTrack *track, int tick) {
+        const auto found = programs.find(track);
+        if (found != programs.end()) {
+            auto at = found->second.upper_bound(tick);
+            if (at != found->second.begin()) return std::prev(at)->second;
+        }
+        const auto first = firstPrograms.find(track);
+        return first == firstPrograms.end() ? 0 : first->second;
+    };
     int id = 1;
     for (int channel = 0; channel < 16; ++channel) {
         auto *events = file->channelEvents(channel);
@@ -1562,7 +1590,7 @@ void MatrixWidget::refreshRegionViewNotes() {
             if (index < 0) continue;
             source.push_back({id++, index, note->midiTime(),
                               note->offEvent()->midiTime(), note->note(),
-                              note->velocity(), note->channel(), xiv::guitarProgramOrDefault(note->track()->progAtTick(note->midiTime()))});
+                              note->velocity(), note->channel(), xiv::guitarProgramOrDefault(programAt(note->track(), note->midiTime()))});
         }
     }
     _regionFullNotes = xiv::renderRegionNotes(source, _regionViewModel);
