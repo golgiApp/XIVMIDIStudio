@@ -1022,10 +1022,19 @@ protected:
             const auto renderedNotes = xiv::renderRegionNotes(sourceNotes, _regions, i);
             if (!renderedNotes.empty()) {
                 for (const auto &note : renderedNotes) {
+                    if (note.endTick < visibleStartTick || note.startTick > endTick) continue;
                     lowestPitch = std::min(lowestPitch, note.pitch);
                     highestPitch = std::max(highestPitch, note.pitch);
                 }
-                const int pitchRange = std::max(1, highestPitch - lowestPitch);
+                if (lowestPitch > highestPitch) continue;
+                // Use the available area below the title. Distant pitches
+                // elsewhere in the song must not flatten visible chords.
+                const double pitchRange = std::max(12, highestPitch - lowestPitch);
+                const double pitchCenter = (lowestPitch + highestPitch) * 0.5;
+                const double previewTop = y + 25.0;
+                const double previewBottom = y + laneHeight - 10.0;
+                const double pitchStep = (previewBottom - previewTop) / pitchRange;
+                const double noteHeight = std::clamp(pitchStep * 0.65, 1.0, 2.0);
                 QColor previewAccent = c.isValid() ? c : QColor("#7EA4D4");
                 int h = 0, s = 0, l = 0, a = 255;
                 previewAccent.getHsl(&h, &s, &l, &a);
@@ -1045,12 +1054,14 @@ protected:
                     const int ex = std::min(width() - 3,
                         xForMs(_file->msOfTick(note.endTick)));
                     if (ex <= sx) continue;
-                    const int ny = y + laneHeight - 17 - (note.pitch - lowestPitch) * (laneHeight - 52) / pitchRange;
+                    const double ny = (previewTop + previewBottom) * 0.5 -
+                        (note.pitch - pitchCenter) * pitchStep;
                     // Keep the arrangement preview light and Piano-Roll-like.
                     // A small gap preserves repeated attacks that would
                     // otherwise merge into one heavy continuous block.
                     const int noteWidth = std::max(1, ex - sx - 1);
-                    p.drawRect(QRect(sx, ny + 1, noteWidth, 2));
+                    p.fillRect(QRectF(sx, ny - noteHeight * 0.5, noteWidth, noteHeight),
+                               previewAccent.lighter(145));
                 }
                 p.restore();
             }
