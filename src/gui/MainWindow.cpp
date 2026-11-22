@@ -197,15 +197,20 @@ static QStringList enabledSoundFontPaths() {
 static bool channelUsedByAnotherTrack(MidiFile *file, MidiTrack *track, int channel);
 
 static void assignTrackProgram(MidiFile *file, MidiTrack *track, int channel, int program) {
-    const auto events = file->channelEvents(channel)->values(0);
-    for (auto *event : events) {
-        auto *change = dynamic_cast<ProgChangeEvent *>(event);
-        if (change && change->track() == track) {
-            change->setProgram(program);
-            return;
+    // This is a track-wide choice. Imported changes later in the song must
+    // not silently restore the previous instrument after a seek or playback.
+    bool hasInitialProgram = false;
+    for (int ch = 0; ch < 16; ++ch) {
+        const auto *events = file->channelEvents(ch);
+        for (auto it = events->cbegin(); it != events->cend(); ++it) {
+            auto *change = dynamic_cast<ProgChangeEvent *>(it.value());
+            if (!change || change->track() != track) continue;
+            if (change->program() != program) change->setProgram(program);
+            if (ch == channel && it.key() == 0) hasInitialProgram = true;
         }
     }
-    file->channel(channel)->insertEvent(new ProgChangeEvent(channel, program, track), 0);
+    if (!hasInitialProgram)
+        file->channel(channel)->insertEvent(new ProgChangeEvent(channel, program, track), 0);
 }
 
 MainWindow::MainWindow(QString initFile)
@@ -845,7 +850,7 @@ MainWindow::MainWindow(QString initFile)
             return;
         }
         QSet<int> seenPrograms;
-        const int currentProgram = file->channel(activeChannel)->progAtTick(file->cursorTick());
+        const int currentProgram = track->progAtTick(file->cursorTick());
         const auto addPreset = [this, &seenPrograms, track, activeChannel, currentProgram](
                                    QMenu *group, const QString &name, int program) {
             if (seenPrograms.contains(program)) return;
@@ -882,7 +887,7 @@ MainWindow::MainWindow(QString initFile)
                         activeChannel = destination;
                     }
                     assignTrackProgram(file, track, activeChannel, program);
-                    if (!xiv::isGuitarProgram(program)) _arrangementWidget->clearTrackGuitarPrograms(track->number());
+                    _arrangementWidget->clearTrackGuitarPrograms(track->number());
                     track->setName(name);
                     file->protocol()->endAction();
                     };
