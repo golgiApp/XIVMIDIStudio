@@ -1034,7 +1034,7 @@ protected:
                 const double previewTop = y + 25.0;
                 const double previewBottom = y + laneHeight - 10.0;
                 const double pitchStep = (previewBottom - previewTop) / pitchRange;
-                const double noteHeight = std::clamp(pitchStep * 0.65, 1.0, 2.0);
+                const double noteHeight = 3.0;
                 QColor previewAccent = c.isValid() ? c : QColor("#7EA4D4");
                 int h = 0, s = 0, l = 0, a = 255;
                 previewAccent.getHsl(&h, &s, &l, &a);
