@@ -1046,7 +1046,11 @@ protected:
                         xForMs(_file->msOfTick(note.endTick)));
                     if (ex <= sx) continue;
                     const int ny = y + laneHeight - 17 - (note.pitch - lowestPitch) * (laneHeight - 52) / pitchRange;
-                    p.drawRect(QRect(sx, ny, std::max(1, ex - sx), 4));
+                    // Keep the arrangement preview light and Piano-Roll-like.
+                    // A small gap preserves repeated attacks that would
+                    // otherwise merge into one heavy continuous block.
+                    const int noteWidth = std::max(1, ex - sx - 1);
+                    p.drawRect(QRect(sx, ny + 1, noteWidth, 2));
                 }
                 p.restore();
             }
